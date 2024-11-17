@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mfs_tools"
-version = "0.0.9"
+name = "mfs-tools"
+version = "0.0.10"
 authors = [
     { name="Mike Schmidt", email="mikeschmidt@schmidtgracen.com" },
 ]
