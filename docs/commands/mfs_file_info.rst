@@ -2,5 +2,5 @@ mfs_file_info
 
 Usage:
 
-    mfs_file_info /path/to/file [--just-the-res] [--verbose]
+    mfs_file_info /path/to/file [--just-the-dims] [--verbose]
 
