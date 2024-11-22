@@ -11,7 +11,7 @@ def get_arguments():
         description="Describe the file at the path specified."
     )
     parser.add_argument(
-        "file",
+        "input_file",
         help="A file to investigate",
     )
     parser.add_argument(
@@ -30,8 +30,21 @@ def get_arguments():
     return args
 
 
+def file_info(input_file, just_the_dims=False, verbose=False):
+    """ Return a string with information about the file_path.
+    """
+
+    return mt.get_img_and_desc(
+        Path(input_file),
+        only_dims=just_the_dims,
+        verbose=verbose
+    )
+
+
 def main():
     """ main entry point
+
+        The main function wraps 'file_info' for command line usage.
     """
 
     args = get_arguments()
@@ -40,9 +53,9 @@ def main():
         print(f"Running mfs_file_info on '{args.file}', with verbose output")
 
     if Path(args.file).is_file():
-        img, desc = mt.get_img_and_desc(
+        img, desc = file_info(
             args.file,
-            only_dims=args.just_the_dims,
+            just_the_dims=args.just_the_dims,
             verbose=args.verbose
         )
         print(desc)

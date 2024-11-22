@@ -1,0 +1,172 @@
+from pathlib import Path
+import multiprocessing as mp
+import subprocess
+import nibabel as nib
+from datetime import datetime as dt
+import numpy as np
+import os
+
+from mfs_tools.library import red_on, color_off
+
+
+def find_wb_command_path(suggested_path=None):
+    """ Find wb_command in some likely places.
+    """
+
+    if (
+            (suggested_path is not None) and
+            Path(suggested_path).is_file() and
+            str(suggested_path).endswith("wb_command")
+    ):
+        return suggested_path
+
+    path_suggestions = [
+        Path("/opt/workbench/bin_linux64/wb_command"),
+        Path("/opt/workbench/2.0.1/bin_linux64/wb_command"),
+        Path("/usr/local/workbench/bin_linux64/wb_command"),
+        Path("/usr/local/workbench/2.0.1/bin_linux64/wb_command"),
+    ]
+    for p in path_suggestions:
+        if p.is_file():
+            return p
+
+    return None
+
+
+# Define the logic for calculating distances with wb_command
+def worker(cmd_path, gifti_path, tmp_path, ord_idx, vert_idx):
+    """ execute wb_command on one vertex"""
+
+    _p = subprocess.run([
+        str(cmd_path), '-surface-geodesic-distance',
+        str(gifti_path), str(vert_idx), str(tmp_path)
+    ])
+    if _p.returncode == 0:
+        tmp_img = nib.GiftiImage.from_filename(str(tmp_path))
+        # Use uint8 rather than float to keep memory usage reasonable.
+        # Numpy truncates floats to cast to uint8, but matlab rounds.
+        # We would like to match matlab so result verification is easier.
+        # Numpy also overflows negatives to 255, so we need to clip them.
+        # Note that even after doing it this way, the distance values from
+        # python differ from matlab's in 7611 of the 441 million lh distances.
+        # That's only about 1 difference in 50,000, but it's finite.
+        dist_data = np.uint8(np.clip(tmp_img.darrays[0].data + 0.5, 0, 255))
+        Path(tmp_path).unlink(missing_ok=True)
+        return ord_idx, vert_idx, dist_data
+    else:
+        print(f"ERROR: {ord_idx}/{vert_idx} returned {_p.returncode}")
+        _p = subprocess.run(["touch", str(tmp_path)])
+        return ord_idx, vert_idx, None
+
+
+def make_distance_matrix(
+        reference_cifti_path,
+        surface_file,
+        save_to,
+        num_procs,
+        wb_command_path=None,
+        work_dir=None,
+):
+    """ Make a distance matrix from surface files to match reference_img.
+    """
+
+    # Ensure wb_command is good
+    wb_command = find_wb_command_path(wb_command_path)
+    if wb_command is None:
+        print(f"Could not find wb_command; try providing it explicitly.")
+        return None
+
+    # Load reference data (just for header) and surface geometry
+    ref_cifti = nib.cifti2.Cifti2Image.from_filename(reference_cifti_path)
+    surf = nib.gifti.GiftiImage.from_filename(surface_file)
+
+    # Only calculate distance to real cortical vertices that may get used.
+    brain_anat_ax = ref_cifti.header.get_axis(1)
+    surf_anat = surf.darrays[0].metadata.get('AnatomicalStructurePrimary', '')
+    anat_map = {
+        'CortexLeft': 'CIFTI_STRUCTURE_CORTEX_LEFT',
+        'CortexRight': 'CIFTI_STRUCTURE_CORTEX_RIGHT',
+    }
+    try:
+        # These are the indices we actually want to calculate from
+        surf_idx = brain_anat_ax[brain_anat_ax.name == anat_map[surf_anat]]
+    except KeyError:
+        print(f"{red_on}Error: The surface file contains '{surf_anat}' "
+              f"anatomy, which does not match 'CortexLeft' or 'CortexRight'."
+              f"{color_off}")
+        return None
+
+    # Set up a temporary working directory
+    if work_dir is None:
+        work_dir = Path(save_to) / "wb_vec_tmp"
+        work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(work_dir / "temp_deletable_file_.nothing", "w") as f:
+            f.write("")
+    except PermissionError:
+        print(f"The work path {work_dir} doesn't allow me to write to it.")
+        return None
+    except FileNotFoundError:
+        print(f"The work path {work_dir} doesn't exist and I can't create it.")
+        return None
+    finally:
+        Path(work_dir / "temp_deletable_file_.nothing").unlink(missing_ok=True)
+
+    # Report some debuggable info
+    print(f"The system has {os.cpu_count()} CPUs, "
+          f"and we're going to use {num_procs}.")
+    num_procs = np.min([
+        mp.cpu_count(), os.cpu_count(), num_procs,
+    ])
+
+    # Define the callback handler for storing results from the worker
+    vectors_modified = list()
+    pcts_written = list()
+    distance_matrix = np.zeros(
+        (len(surf_idx.vertex), len(surf_idx.vertex)),
+        dtype=np.uint8
+    )
+    def result_receiver(result):
+        """ Mask the distances vector and integrate it into our matrix.
+        """
+        if result is None:
+            print(f"ERROR: Something went wrong with a result.")
+        elif result[2] is None:
+            print(f"ERROR: Something went wrong with result {result[0]}/{result[1]}.")
+        else:
+            distance_matrix[:, result[0]] = result[2][surf_idx.vertex]
+            vectors_modified.append(result[1])
+            pct_done = int(100 * len(vectors_modified) / len(surf_idx.vertex))
+            if (pct_done % 5 == 0) and (pct_done not in pcts_written):
+                if pct_done % 10 == 0:
+                    print(f" {(pct_done / 100):0.0%}", end="", flush=True)
+                else:
+                    print(" .", end="", flush=True)
+                pcts_written.append(pct_done)
+
+    # Execute wb_command distance calculators in num_threads parallel processes
+    start_dt = dt.now()
+
+    print(f"  creating {len(surf_idx.vertex):,} processes ({dt.now() - start_dt})")
+    with mp.Pool(num_procs) as pool:
+        for i, loc_idx in enumerate(surf_idx.vertex):
+            # if (i < 5) or (i % 3000 == 0):
+            #     print(f"apply_async on {i}/{loc_idx}")
+            tmp_file_path = work_dir / f"dist_{loc_idx:07d}.func.gii"
+            pool.apply_async(
+                func=worker,
+                args=(wb_command, surface_file, tmp_file_path, i, loc_idx, ),
+                callback=result_receiver,
+            )
+
+        pool.close()
+        pool.join()
+
+    print()
+    print(f"  processing complete ({len(vectors_modified)} vectors added)"
+          f" ({dt.now() - start_dt})")
+
+    end_dt = dt.now()
+    print(f"Ran from {start_dt} to {end_dt} ({end_dt - start_dt})")
+
+    return distance_matrix
