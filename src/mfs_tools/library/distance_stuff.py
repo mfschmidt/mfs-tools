@@ -115,11 +115,11 @@ def make_distance_matrix(
         Path(work_dir / "temp_deletable_file_.nothing").unlink(missing_ok=True)
 
     # Report some debuggable info
-    print(f"The system has {os.cpu_count()} CPUs, "
-          f"and we're going to use {num_procs}.")
     num_procs = np.min([
         mp.cpu_count(), os.cpu_count(), num_procs,
     ])
+    print(f"The system has {os.cpu_count()} CPUs, "
+          f"and we're going to use {num_procs}.")
 
     # Define the callback handler for storing results from the worker
     vectors_modified = list()
