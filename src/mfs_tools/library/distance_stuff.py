@@ -4,7 +4,9 @@ import subprocess
 import nibabel as nib
 from datetime import datetime as dt
 import numpy as np
+import pandas as pd
 import os
+import psutil
 
 from mfs_tools.library import red_on, color_off
 
@@ -170,3 +172,53 @@ def make_distance_matrix(
     print(f"Ran from {start_dt} to {end_dt} ({end_dt - start_dt})")
 
     return distance_matrix
+
+
+def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
+    """ Wrap numpy allclose() with analysis of differences and commentary. """
+
+    assert a.shape == b.shape, "Matrices must be the same size and shape."
+
+    # Track memory usage
+    mem_before = psutil.Process(os.getpid()).memory_info().rss
+
+    # This comparison may consume a lot of RAM,
+    # I assume because it compares floats.
+    # So ensure there's memory available for it.
+    if np.allclose(a, b):
+        if verbose:
+            print(f"  The matrices '{a_name}' and '{b_name}' are equal.")
+        return_val = True
+    else:
+        if verbose:
+            print(f"  There are mismatches between '{a_name}' and '{b_name}'.")
+            if preview:
+                print(f"  Top left corners, for a small preview:")
+                print(np.hstack([a[:6, :6], b[:6, :6]]))
+
+            # Extract just the values that differ between methods and compare them.
+            eq = np.array(a == b, dtype=np.bool)[np.tril_indices_from(a)]
+            different_a_vals = a[np.tril_indices_from(a)][~eq]
+            different_b_vals = b[np.tril_indices_from(b)][~eq]
+
+            print(f"  {np.sum(~eq):,} of {len(eq):,} values differ.")
+
+            diff_vals = pd.DataFrame({
+                a_name: np.astype(different_a_vals, np.float32),
+                b_name: np.astype(different_b_vals, np.float32),
+            })
+            diff_vals['delta'] = diff_vals[a_name] - diff_vals[b_name]
+
+            print("  The largest difference is "
+                  f"{diff_vals['delta'].min():0.2f} or "
+                  f"{diff_vals['delta'].max():0.2f}")
+        return_val = False
+
+    mem_after = psutil.Process(os.getpid()).memory_info().rss
+
+    if verbose:
+        print(f"  Mem before {mem_before / 1024 / 1024:0,.1f}MB; "
+              f"Mem after {mem_after / 1024 / 1024:0,.1f}MB; "
+              f"delta {(mem_after - mem_before) / 1024 / 1024:0,.1f}")
+
+    return return_val
