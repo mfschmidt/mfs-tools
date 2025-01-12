@@ -50,17 +50,17 @@ def main():
     args = get_arguments()
 
     if args.verbose:
-        print(f"Running mfs_file_info on '{args.file}', with verbose output")
+        print(f"Running mfs_file_info on '{args.input_file}', with verbose output")
 
-    if Path(args.file).is_file():
+    if Path(args.input_file).is_file():
         img, desc = file_info(
-            args.file,
+            args.input_file,
             just_the_dims=args.just_the_dims,
             verbose=args.verbose
         )
         print(desc)
     else:
-        print(f"No file named '{args.file}' exists.")
+        print(f"No file named '{args.input_file}' exists.")
 
 
 if __name__ == "__main__":
