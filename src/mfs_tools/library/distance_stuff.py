@@ -7,8 +7,10 @@ import numpy as np
 import pandas as pd
 import os
 import psutil
+from scipy import stats
 
 from mfs_tools.library import red_on, green_on, color_off
+from mfs_tools.library.cifti_stuff import get_cortical_indices, get_subcortical_indices
 
 
 def find_wb_command_path(suggested_path=None):
@@ -283,7 +285,9 @@ def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
     return return_val
 
 
-def regress_adjacent_cortex(bold_cifti, distance_matrix, distance_threshold):
+def regress_adjacent_cortex(
+        bold_cifti, distance_matrix, distance_threshold, verbose=False
+):
     """ Regress out the cortical signal from subcortical voxels within a range.
 
         :param bold_cifti: The cifti image containing 2D BOLD data, loci x time
@@ -304,19 +308,48 @@ def regress_adjacent_cortex(bold_cifti, distance_matrix, distance_threshold):
 
     """
 
-    # Extract just the distance between subcortical voxels and cortical vertices
+    # Make a copy of BOLD data to modify with adjusted values
+    adjusted_data = bold_cifti.get_fdata().copy()
+
+    # Extract just distances between subcortical voxels and cortical vertices
     # distance_matrix is symmetrical, and we only need one side.
     # Only calculate distance to real cortical vertices that may get used.
-    brain_anat_ax = bold_cifti.header.get_axis(1)
-    anat_map = {
-        'CortexLeft': 'CIFTI_STRUCTURE_CORTEX_LEFT',
-        'CortexRight': 'CIFTI_STRUCTURE_CORTEX_RIGHT',
-    }
-    try:
-        # These are the indices we actually want to calculate from
-        surf_idx = brain_anat_ax[brain_anat_ax.name == anat_map[surf_anat]]
-    except KeyError:
-        print(f"{red_on}Error: The surface file contains '{surf_anat}' "
-              f"anatomy, which does not match 'CortexLeft' or 'CortexRight'."
-              f"{color_off}")
-        return None
+    cort_idx = get_cortical_indices(bold_cifti)
+    subcort_idx = get_subcortical_indices(bold_cifti)
+    relevant_distances = distance_matrix[subcort_idx, :][:, cort_idx]
+    if verbose:
+        print(f"Filtered distance matrix down to "
+              f"{relevant_distances.shape[0]:,} "
+              f"sub-cortical voxels by {relevant_distances.shape[1]:,} "
+              f"cortical vertices")
+
+    # Determine which subcortical voxels are within 20mm of a cortical vertex.
+    smallest_distances = np.min(relevant_distances, axis=1)
+    outer_voxel_indices = np.where(smallest_distances <= distance_threshold)[0]
+    if verbose:
+        print(f"Found {len(outer_voxel_indices):,} voxels within "
+              f"{distance_threshold}mm of a cortical vertex.")
+
+    # Regress surrounding signal from each voxel near cortex
+    for cifti_locus_index in outer_voxel_indices:
+        # Extract all BOLD data within 20mm of this voxel
+        dist_mask = distance_matrix[cifti_locus_index, :] <= distance_threshold
+        nearby_bold = bold_cifti.get_fdata()[:, dist_mask]
+        if nearby_bold.shape[1] > 1:
+            nearby_bold = np.mean(nearby_bold, axis=1)
+
+        # Regress surrounding BOLD from this voxel's BOLD
+        voxel_index = subcort_idx[cifti_locus_index]
+        y = bold_cifti.get_fdata()[:, voxel_index]
+        results = stats.linregress(nearby_bold, y)
+        predicted_y = results.intercept + results.slope * nearby_bold
+        residuals = y - predicted_y
+
+        # Replace the BOLD data with residuals
+        adjusted_data[:, voxel_index] = residuals
+
+    adjusted_img = nib.Cifti2Image(adjusted_data, header=bold_cifti.header)
+    if verbose:
+        print(f"Adjustments to {len(outer_voxel_indices):,} subcortical voxels"
+              f" near cortex complete. New Cifti2 image {adjusted_img.shape}.")
+    return adjusted_img
