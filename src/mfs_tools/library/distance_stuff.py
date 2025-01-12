@@ -8,7 +8,7 @@ import pandas as pd
 import os
 import psutil
 
-from mfs_tools.library import red_on, color_off
+from mfs_tools.library import red_on, green_on, color_off
 
 
 def find_wb_command_path(suggested_path=None):
@@ -187,7 +187,9 @@ def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
     # So ensure there's memory available for it.
     if np.allclose(a, b):
         if verbose:
-            print(f"  The matrices '{a_name}' and '{b_name}' are equal.")
+            print(green_on +
+                  f"  The matrices '{a_name}' and '{b_name}' are equal." +
+                  color_off)
         return_val = True
     else:
         if verbose:
@@ -201,7 +203,15 @@ def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
             different_a_vals = a[np.tril_indices_from(a)][~eq]
             different_b_vals = b[np.tril_indices_from(b)][~eq]
 
-            print(f"  {np.sum(~eq):,} of {len(eq):,} values differ.")
+            if (len(eq) / np.sum(~eq)) < 10000:
+                print(red_on +
+                      f"  {np.sum(~eq):,} of {len(eq):,} values differ." +
+                      color_off)
+            else:
+                print(green_on +
+                      f"  Only 1 in {int(len(eq) / np.sum(~eq))} values differ" +
+                      f" ({np.sum(~eq):,} of {len(eq):,}). " +
+                      color_off)
 
             diff_vals = pd.DataFrame({
                 a_name: np.astype(different_a_vals, np.float32),
@@ -209,9 +219,15 @@ def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
             })
             diff_vals['delta'] = diff_vals[a_name] - diff_vals[b_name]
 
+            if (    (diff_vals['delta'].min() < -1.0) or
+                    (diff_vals['delta'].max() > 1.0)
+            ):
+                print(red_on)
+            else:
+                print(green_on)
             print("  The largest difference is "
                   f"{diff_vals['delta'].min():0.2f} or "
-                  f"{diff_vals['delta'].max():0.2f}")
+                  f"{diff_vals['delta'].max():0.2f}{color_off}")
         return_val = False
 
     mem_after = psutil.Process(os.getpid()).memory_info().rss
