@@ -6,7 +6,35 @@ from pathlib import Path
 
 
 def concat_dtseries(files, tr_len=None):
-    """ Concatenate multiple files together, if necessary """
+    """ Concatenate multiple Cifti2 files together
+
+        Requiring further documentation and thought:
+        Chuck Lynch and Evan Gordons' code mean-centered each image to
+        zero, then removed frames with motion FD > 0.3mm. But since we
+        don't like or don't trust the high-motion frames, it doesn't
+        seem wise to let them affect our mean-centering, so I reversed
+        that order. This function first removes motion outliers, then
+        mean-centers the data.
+
+        This should eventually be optional (it's not yet) and configurable.
+        But the current iteration is simply replicating the `Lynch 2024
+        code <https://github.com/cjl2007/PFM-Depression>`_
+
+        :param files: list of files to concatenate
+        :type files: list of :pathlib.Path: objects
+
+        :param tr_len: length of a single TR, in seconds. If not provided,
+            this function will attempt to find it in the json sidecar's
+            RepetitionTime field. If that fails, it will just assume 2.0s,
+            which is unlikely to be correct.
+        :type tr_len: float
+
+        :return: A Cifti2 dtseries image containing data from all files,
+            concatenated along the time axis, in the order of the list
+            provided.
+        :rtype: nibabel.Cifti2Image
+
+    """
 
     # Make sure the TRs are all the same for these images
     # TODO: The smoothed json files are subsets of the unsmoothed; need to work this out
