@@ -69,7 +69,50 @@ def make_distance_matrix(
         wb_command_path=None,
         work_dir=None,
 ):
-    """ Make a distance matrix from surface files to match reference_img.
+    """ Make a distance matrix from surface files to match reference.
+
+        :param reference_cifti_path: The path to a reference cifti file.
+            This is most likely one of the BOLD dtseries files to be
+            filtered by distance. It doesn't contain any location
+            information per vertex, but contains a BrainModelAxis
+            we use to determine which vertices are being used.
+        :type reference_cifti_path: pathlib.Path
+
+        :param surface_file: The path to a Cifti2 surface file.
+        :type surface_file: pathlib.Path
+
+        :param save_to: The path to save the distance matrix to.
+        :type save_to: pathlib.Path
+
+        :param num_procs: The number of processes to use. Default is 1.
+            This function will use the smaller value of num_procs and
+            the value it gets back from multiprocessing.cpu_count().
+        :type num_procs: int
+
+        :param wb_command_path: The path to a Connectome Workbench
+            wb_command executable. This function relies on wb_commend
+            to determine the distance from each location to all other
+            locations.
+        :type wb_command_path: pathlib.Path
+
+        :param work_dir: The working directory. Intermediate files
+            from wb_command are written, read, and deleted from
+            this path. Ideally, it should be fast and local.
+        :type work_dir: pathlib.Path
+
+        :return: The distance matrix. This is a symmetrical matrix
+            with ones along the diagonal. Each edge contains the
+            distance in mm between its row location and column location.
+            Subcortical-to-subcortical and Subcortical-to-cortical
+            distances are Euclidean. Cortical-to-cortical distances
+            are geodesic along the surface in surface_file.
+            With around 92k locations, depending on the reference
+            image, there are about 8.5 billion values. We return
+            them as numpy.uint8 values to fit them into about 8GB
+            rather than floats, which would consume about 33GB for
+            singles or 66 GB for doubles.
+        :rtype: numpy.ndarray
+
     """
 
     # Ensure wb_command is good
@@ -238,3 +281,42 @@ def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
               f"delta {(mem_after - mem_before) / 1024 / 1024:0,.1f}")
 
     return return_val
+
+
+def regress_adjacent_cortex(bold_cifti, distance_matrix, distance_threshold):
+    """ Regress out the cortical signal from subcortical voxels within a range.
+
+        :param bold_cifti: The cifti image containing 2D BOLD data, loci x time
+            This is most likely one of the BOLD dtseries files to be
+            filtered by distance. It doesn't contain any location
+            information per vertex, but contains a BrainModelAxis
+            we use to determine which vertices are being used.
+            likely [85059ish loci x t]
+        :type bold_cifti: nibabel.Cifti2Image
+
+        :param distance_matrix: A huge distance matrix
+            This contains distances between every locus in the bold_cifti
+            and every other distance, likely [85059ish x 85059ish]
+        :type distance_matrix: numpy.ndarray
+
+        :param distance_threshold: The path to save the distance matrix to.
+        :type distance_threshold: int
+
+    """
+
+    # Extract just the distance between subcortical voxels and cortical vertices
+    # distance_matrix is symmetrical, and we only need one side.
+    # Only calculate distance to real cortical vertices that may get used.
+    brain_anat_ax = bold_cifti.header.get_axis(1)
+    anat_map = {
+        'CortexLeft': 'CIFTI_STRUCTURE_CORTEX_LEFT',
+        'CortexRight': 'CIFTI_STRUCTURE_CORTEX_RIGHT',
+    }
+    try:
+        # These are the indices we actually want to calculate from
+        surf_idx = brain_anat_ax[brain_anat_ax.name == anat_map[surf_anat]]
+    except KeyError:
+        print(f"{red_on}Error: The surface file contains '{surf_anat}' "
+              f"anatomy, which does not match 'CortexLeft' or 'CortexRight'."
+              f"{color_off}")
+        return None
