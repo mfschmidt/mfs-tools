@@ -1,5 +1,10 @@
 import nibabel as nib
 import numpy as np
+from datetime import datetime
+import subprocess
+
+from mfs_tools.library import red_on, color_off
+from mfs_tools.library.file_stuff import find_wb_command_path
 
 
 # This file contains functions extending nibabel functionality for doing
@@ -75,6 +80,37 @@ def get_scalar_axes(img, verbose=False):
     """
 
     return get_axes_by_type(img, nib.cifti2.ScalarAxis, verbose=verbose)
+
+
+def get_repetition_time(img, verbose=False):
+    """ From a Cifti2 image, extract the Repetition Time (TR).
+
+        This function extracts and returns the step size from the series axis
+        in the Cifti2 image header.
+
+        :param img: A Cifti2Image
+        :type img: nibabel.Cifti2Image
+
+        :param verbose: Pass True to get printed output for debugging
+        :type verbose: bool
+    """
+
+    return get_axes_by_type(img, nib.cifti2.SeriesAxis, verbose=verbose).step
+
+
+def get_series_axes(img, verbose=False):
+    """ From a Cifti2 image, extract a SeriesAxis.
+
+        This is a wrapper function to simplify :py:func:`get_axes_by_type`
+
+        :param img: A Cifti2Image
+        :type img: nibabel.Cifti2Image
+
+        :param verbose: Pass True to get printed output for debugging
+        :type verbose: bool
+    """
+
+    return get_axes_by_type(img, nib.cifti2.SeriesAxis, verbose=verbose)
 
 
 def get_brain_model_axes(img, verbose=False):
@@ -178,7 +214,7 @@ def get_subcortical_data(img, verbose=False):
 
     all_data = img.get_fdata()
     anat_axis = get_brain_model_axes(img, verbose=verbose)
-    subcort_idx = get_cortical_indices(img, verbose=verbose)
+    subcort_idx = get_subcortical_indices(img, verbose=verbose)
     if len(anat_axis) == all_data.shape[0]:
         if verbose:
             print(f"  [v={len(subcort_idx):,} x t={all_data.shape[1]:,}]")
@@ -190,3 +226,42 @@ def get_subcortical_data(img, verbose=False):
     else:
         raise ValueError(f"Cifti data are shaped {img.shape}, but I'm getting "
                          f"a {len(anat_axis)}-long axis. Not sure what to do.")
+
+
+def correlate_with_workbench(bold_file, dconn_file, verbose=False):
+    """
+    Correlates time series in a Cifti2 BOLD file using Connectome Workbench
+
+    This function uses a subprocess to invoke the
+    Workbench command-line utility and logs the process if verbose mode is enabled.
+    Time series are read from bold_file, and the connectivity matrix is written to
+    dconn_file.
+
+    :param bold_file: The path to the input BOLD file.
+    :type bold_file: Union[str, pathlib.Path]
+    :param dconn_file: The path to the output dense connectivity (dconn) file.
+    :type dconn_file: Union[str, pathlib.Path]
+    :param verbose: Flag to enable detailed print information.
+    :type verbose: bool
+    :return: Boolean value indicating whether the correlation process was successful.
+    :rtype: bool
+    """
+
+    if verbose:
+        print(f"Starting correlation at {datetime.now()}")
+
+    correlation_command = [
+        find_wb_command_path(),
+        "-cifti-correlation",
+        str(bold_file),
+        str(dconn_file),
+    ]
+    corr_proc = subprocess.run(correlation_command, capture_output=True)
+
+    if verbose:
+        print(datetime.now())
+        print(corr_proc.stdout.decode("utf-8"))
+    if corr_proc.returncode != 0:
+        print(f"{red_on}{corr_proc.stderr.decode('utf8')}{color_off}")
+
+    return True if corr_proc.returncode == 0 else False
