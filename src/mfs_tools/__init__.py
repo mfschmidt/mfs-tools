@@ -12,3 +12,4 @@ from .library.distance_stuff import *
 from .library.file_stuff import *
 from .library.similarity_scores import *
 from .library.utility_stuff import *
+from .library.bids_stuff import *
