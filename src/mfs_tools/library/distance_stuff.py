@@ -4,37 +4,12 @@ import subprocess
 import nibabel as nib
 from datetime import datetime as dt
 import numpy as np
-import pandas as pd
 import os
-import psutil
 from scipy import stats
 
-from mfs_tools.library import red_on, green_on, color_off
+from mfs_tools.library import red_on, color_off
 from mfs_tools.library.cifti_stuff import get_cortical_indices, get_subcortical_indices
-
-
-def find_wb_command_path(suggested_path=None):
-    """ Find wb_command in some likely places.
-    """
-
-    if (
-            (suggested_path is not None) and
-            Path(suggested_path).is_file() and
-            str(suggested_path).endswith("wb_command")
-    ):
-        return suggested_path
-
-    path_suggestions = [
-        Path("/opt/workbench/bin_linux64/wb_command"),
-        Path("/opt/workbench/2.0.1/bin_linux64/wb_command"),
-        Path("/usr/local/workbench/bin_linux64/wb_command"),
-        Path("/usr/local/workbench/2.0.1/bin_linux64/wb_command"),
-    ]
-    for p in path_suggestions:
-        if p.is_file():
-            return p
-
-    return None
+from mfs_tools.library.file_stuff import find_wb_command_path
 
 
 # Define the logic for calculating distances with wb_command
@@ -64,21 +39,30 @@ def worker(cmd_path, gifti_path, tmp_path, ord_idx, vert_idx):
 
 
 def make_distance_matrix(
-        reference_cifti_path,
+        reference_cifti_img,
         surface_file,
         save_to,
         num_procs,
         wb_command_path=None,
         work_dir=None,
+        verbose=False,
 ):
-    """ Make a distance matrix from surface files to match reference.
+    """ Make a distance matrix from a reference image to one surface file.
 
-        :param reference_cifti_path: The path to a reference cifti file.
-            This is most likely one of the BOLD dtseries files to be
+        This function uses wb_command at each vertex and voxel in a cifti2
+        image to all locations in surface_file. It gathers each vector of
+        distances into a single distance matrix. Because there are so many
+        values, it saves distances in uint8 format as whole integer
+        millimeters. To build a full distance matrix, this must be run on
+        each hemisphere, and those matrices must be combined with
+        subcortical distances.
+
+        :param reference_cifti_img: The reference cifti image.
+            This is most likely one of the BOLD dtseries images to be
             filtered by distance. It doesn't contain any location
             information per vertex, but contains a BrainModelAxis
             we use to determine which vertices are being used.
-        :type reference_cifti_path: pathlib.Path
+        :type reference_cifti_img: nibabel.Cifti2Image
 
         :param surface_file: The path to a Cifti2 surface file.
         :type surface_file: pathlib.Path
@@ -102,6 +86,9 @@ def make_distance_matrix(
             this path. Ideally, it should be fast and local.
         :type work_dir: pathlib.Path
 
+        :param verbose: Whether to print detailed output about the process
+        :type verbose: bool, optional
+
         :return: The distance matrix. This is a symmetrical matrix
             with ones along the diagonal. Each edge contains the
             distance in mm between its row location and column location.
@@ -124,11 +111,10 @@ def make_distance_matrix(
         return None
 
     # Load reference data (just for header) and surface geometry
-    ref_cifti = nib.cifti2.Cifti2Image.from_filename(reference_cifti_path)
     surf = nib.gifti.GiftiImage.from_filename(surface_file)
 
     # Only calculate distance to real cortical vertices that may get used.
-    brain_anat_ax = ref_cifti.header.get_axis(1)
+    brain_anat_ax = reference_cifti_img.header.get_axis(1)
     surf_anat = surf.darrays[0].metadata.get('AnatomicalStructurePrimary', '')
     anat_map = {
         'CortexLeft': 'CIFTI_STRUCTURE_CORTEX_LEFT',
@@ -219,72 +205,6 @@ def make_distance_matrix(
     return distance_matrix
 
 
-def compare_mats(a, b, a_name="a", b_name="b", verbose=True, preview=True):
-    """ Wrap numpy allclose() with analysis of differences and commentary. """
-
-    assert a.shape == b.shape, "Matrices must be the same size and shape."
-
-    # Track memory usage
-    mem_before = psutil.Process(os.getpid()).memory_info().rss
-
-    # This comparison may consume a lot of RAM,
-    # I assume because it compares floats.
-    # So ensure there's memory available for it.
-    if np.allclose(a, b):
-        if verbose:
-            print(green_on +
-                  f"  The matrices '{a_name}' and '{b_name}' are equal." +
-                  color_off)
-        return_val = True
-    else:
-        if verbose:
-            print(f"  There are mismatches between '{a_name}' and '{b_name}'.")
-            if preview:
-                print(f"  Top left corners, for a small preview:")
-                print(np.hstack([a[:6, :6], b[:6, :6]]))
-
-            # Extract just the values that differ between methods and compare them.
-            eq = np.array(a == b, dtype=np.bool)[np.tril_indices_from(a)]
-            different_a_vals = a[np.tril_indices_from(a)][~eq]
-            different_b_vals = b[np.tril_indices_from(b)][~eq]
-
-            if (len(eq) / np.sum(~eq)) < 10000:
-                print(red_on +
-                      f"  {np.sum(~eq):,} of {len(eq):,} values differ." +
-                      color_off)
-            else:
-                print(green_on +
-                      f"  Only 1 in {int(len(eq) / np.sum(~eq))} values differ" +
-                      f" ({np.sum(~eq):,} of {len(eq):,}). " +
-                      color_off)
-
-            diff_vals = pd.DataFrame({
-                a_name: np.astype(different_a_vals, np.float32),
-                b_name: np.astype(different_b_vals, np.float32),
-            })
-            diff_vals['delta'] = diff_vals[a_name] - diff_vals[b_name]
-
-            if (    (diff_vals['delta'].min() < -1.0) or
-                    (diff_vals['delta'].max() > 1.0)
-            ):
-                print(red_on)
-            else:
-                print(green_on)
-            print("  The largest difference is "
-                  f"{diff_vals['delta'].min():0.2f} or "
-                  f"{diff_vals['delta'].max():0.2f}{color_off}")
-        return_val = False
-
-    mem_after = psutil.Process(os.getpid()).memory_info().rss
-
-    if verbose:
-        print(f"  Mem before {mem_before / 1024 / 1024:0,.1f}MB; "
-              f"Mem after {mem_after / 1024 / 1024:0,.1f}MB; "
-              f"delta {(mem_after - mem_before) / 1024 / 1024:0,.1f}")
-
-    return return_val
-
-
 def regress_adjacent_cortex(
         bold_cifti, distance_matrix, distance_threshold, verbose=False
 ):
@@ -306,6 +226,8 @@ def regress_adjacent_cortex(
         :param distance_threshold: The path to save the distance matrix to.
         :type distance_threshold: int
 
+        :param verbose: Whether to print detailed output about the process
+        :type verbose: bool, optional
     """
 
     # Make a copy of BOLD data to modify with adjusted values
@@ -318,7 +240,7 @@ def regress_adjacent_cortex(
     subcort_idx = get_subcortical_indices(bold_cifti)
     relevant_distances = distance_matrix[subcort_idx, :][:, cort_idx]
     if verbose:
-        print(f"Filtered distance matrix down to "
+        print(f"  filtered distance matrix down to "
               f"{relevant_distances.shape[0]:,} "
               f"sub-cortical voxels by {relevant_distances.shape[1]:,} "
               f"cortical vertices")
@@ -327,7 +249,7 @@ def regress_adjacent_cortex(
     smallest_distances = np.min(relevant_distances, axis=1)
     outer_voxel_indices = np.where(smallest_distances <= distance_threshold)[0]
     if verbose:
-        print(f"Found {len(outer_voxel_indices):,} voxels within "
+        print(f"  found {len(outer_voxel_indices):,} voxels within "
               f"{distance_threshold}mm of a cortical vertex.")
 
     # Regress surrounding signal from each voxel near cortex
