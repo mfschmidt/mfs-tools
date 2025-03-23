@@ -25,10 +25,17 @@ Documenting the commands, not the library
 
 .. automodule:: mfs_tools.commands
 
-Documenting two functions, one at a time
-----------------------------------------
+Documenting three functions, one at a time
+------------------------------------------
 
 .. autofunction:: mfs_tools.library.concat_stuff.concat_dtseries
 .. autofunction:: mfs_tools.library.distance_stuff.make_distance_matrix
+.. autofunction:: mfs_tools.library.cifti_stuff.get_axes_by_type
+.. autofunction:: mfs_tools.library.cifti_stuff.get_scalar_axes
+
+Documenting one module
+----------------------
+
+.. automodule:: mfs_tools.library.cifti_stuff
 
 The end
