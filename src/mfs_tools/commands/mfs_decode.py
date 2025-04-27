@@ -188,7 +188,7 @@ def load_bold_image(bold_file, smoothing=None, clipping=None, verbose=False):
     if (clipping is not None) and (clipping != 0):
         if verbose:
             print(f"  clipping the first {clipping} volumes")
-        bold_img = index_img(bold_img, slice(4, bold_img.shape[-1]))
+        bold_img = index_img(bold_img, slice(clipping, bold_img.shape[-1]))
 
     if (smoothing is not None) and (smoothing != 0.0):
         if verbose:
