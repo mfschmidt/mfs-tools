@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import mfs_tools as mt
 from pathlib import Path
