@@ -43,6 +43,7 @@ def make_distance_matrix(
         surface_file,
         save_to,
         num_procs,
+        dtype=np.uint8,
         wb_command_path=None,
         work_dir=None,
         verbose=False,
@@ -80,6 +81,9 @@ def make_distance_matrix(
             to determine the distance from each location to all other
             locations.
         :type wb_command_path: pathlib.Path
+
+        :param dtype: The data type to use for the distance matrix.
+        :type dtype: numpy.dtype, optional
 
         :param work_dir: The working directory. Intermediate files
             from wb_command are written, read, and deleted from
@@ -157,7 +161,7 @@ def make_distance_matrix(
     pcts_written = list()
     distance_matrix = np.zeros(
         (len(surf_idx.vertex), len(surf_idx.vertex)),
-        dtype=np.uint8
+        dtype=dtype
     )
     def result_receiver(result):
         """ Mask the distances vector and integrate it into our matrix.
