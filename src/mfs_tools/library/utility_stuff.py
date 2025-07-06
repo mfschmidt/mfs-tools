@@ -1,5 +1,6 @@
 import os
 import pathlib
+import sys
 
 import psutil
 import numpy as np
@@ -14,6 +15,43 @@ import matplotlib.cm as cm
 from mfs_tools.library import red_on, green_on, color_off
 from .bids_stuff import get_bids_key_pairs, glob_and_bids_match_files
 from .cifti_stuff import get_repetition_time
+
+from collections.abc import Mapping, Sequence
+from _io import _IOBase
+
+
+def get_size(obj, seen=None):
+    """ Recursively finds size of objects in memory
+
+        slightly modified from https://stackoverflow.com/a/78950955/2846766
+    """
+
+    exclude_sequences = (bytes, str, bytearray, _IOBase, memoryview)
+
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    size = sys.getsizeof(obj)
+    # Important mark as seen *before* entering recursion to gracefully handle
+    # self-referential objects
+    seen.add(obj_id)
+    if isinstance(obj, dict):
+        size += sum([get_size(v, seen) for v in obj.values()])
+        size += sum([get_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_size(obj.__dict__, seen)
+    elif isinstance(obj, memoryview):
+        # this way the memoryview target is counted by the "seen" mechanism
+        size += get_size(obj.obj, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, exclude_sequences):
+        size += sum([get_size(i, seen) for i in obj])
+    if hasattr(obj, "__slots__"):
+        for attrname in obj.__slots__:
+            if attr:=getattr(obj, attrname, None):
+                size += get_size(attr, seen)
+    return size
 
 
 def compare_mats(
