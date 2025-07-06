@@ -73,6 +73,12 @@ def get_arguments():
         # This script would then do the crop/extract without the extra file.
     )
     parser.add_argument(
+        "--ignore-motion-outliers", action="store_true",
+        help="by default, motion outliers will be added to the confounds "
+             "matrix (assuming fMRIPrep confounds); you can turn that off"
+             "with --ignore-motion-outliers.",
+    )
+    parser.add_argument(
         "--confound-strategy", type=str, default="",
         help="Optionally, extract a collection of confounds from the "
              "confounds file for regression \n"
@@ -199,7 +205,8 @@ def load_bold_image(bold_file, smoothing=None, clipping=None, verbose=False):
     return bold_img
 
 
-def remove_motion(bold_img, confound_file, scale='zscore', strategy='', method='manual', verbose=False):
+def remove_motion(bold_img, confound_file, scale='zscore', strategy='',
+                  remove_spikes=True, method='manual', verbose=False):
     """ Regress out motion confounds, return scaled residuals. """
 
     if confound_file.name.endswith(".tsv"):
@@ -223,14 +230,34 @@ def remove_motion(bold_img, confound_file, scale='zscore', strategy='', method='
               f"confounds values to match BOLD length")
         confounds = confounds.iloc[confound_clip_num:, :]
 
+    # Find motion outliers
+    if remove_spikes:
+        # We need to check for sum() > 0 because we just clipped some rows
+        # above, and don't need to include columns representing a spike there.
+        spike_cols = [col for col in confounds.columns
+                      if (col.startswith('motion_outlier') and
+                          confounds[col].sum() > 0)]
+        print(f"Including {len(spike_cols)} motion outlier (spike) columns")
+    else:
+        spike_cols = []
+
+
     # If a specific strategy was requested, extract the appropriate columns
     motion_6_cols = ['trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z']
+    deriv_6_cols = [f"{motion}_derivative1" for motion in motion_6_cols]
+    power_6_cols = [f"{motion}_power2" for motion in motion_6_cols]
+    power_deriv_6_cols = [f"{motion}_derivative1_power2" for motion in motion_6_cols]
+    motion_24_cols = motion_6_cols + deriv_6_cols + power_6_cols + power_deriv_6_cols
     if strategy == 'motion_6':
         print(f"Extracting six motion columns from confounds file")
-        confounds = confounds[motion_6_cols]
+        confounds = confounds[motion_6_cols + spike_cols]
     elif strategy == 'motion_7':
         print(f"Extracting 'csf_wm' and six motion columns from confounds file")
-        confounds = confounds[motion_6_cols + ['csf_wm', ]]
+        confounds = confounds[motion_6_cols + ['csf_wm', ] + spike_cols]
+    elif strategy == "motion_25":
+        print(f"Extracting csf_wm' and 24 motion columns from confounds file")
+        confounds = confounds[motion_24_cols + ['csf_wm', ] + spike_cols]
+
 
     # Ensure the y-intercept, or arbitrary mean BOLD, doesn't make a difference.
     confounds['bias'] = 1.0
@@ -455,7 +482,9 @@ def main(args):
     if args.confounds:
         bold_img = remove_motion(
             bold_img, args.confounds, scale='zscore',
-            strategy=args.confound_strategy, verbose=args.verbose
+            strategy=args.confound_strategy,
+            remove_spikes=(not args.ignore_motion_outliers),
+            verbose=args.verbose
         )
 
     if args.save_intermediates:
