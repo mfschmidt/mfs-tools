@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+import sys
 import argparse
 from pathlib import Path
 import nibabel as nib
@@ -13,6 +15,7 @@ import subprocess
 
 import mfs_tools as mt
 from mfs_tools.library import yellow_on, red_on, green_on, color_off
+from mfs_tools.library.bids_stuff import get_bids_key_pairs
 
 
 def get_arguments():
@@ -165,12 +168,20 @@ def get_arguments():
 
 
 def build_distance_matrix(
-        reference_img, num_procs=1, wb_command_path=None, output_path=".",
+        bold_img, lh_surf_file, rh_surf_file,
+        num_procs=1, wb_command_path=None, output_path=".", dtype=np.uint8,
         verbose=False,
 ):
     """ """
 
     # Fetch some prerequisites
+
+    # Build individualized distance matrices with an individual's anatomical
+    # surface files.
+    surface_files = {
+        'lh': lh_surf_file, 'rh': rh_surf_file,
+    }
+    """
     surface_files = {
         'lh': tflow.get(
             'fsLR', suffix='midthickness', extension='surf.gii', hemi='L'
@@ -179,7 +190,8 @@ def build_distance_matrix(
             'fsLR', suffix='midthickness', extension='surf.gii', hemi='R'
         ),
     }
-    brain_ax = mt.get_brain_model_axes(reference_img)
+    """
+    brain_ax = mt.get_brain_model_axes(bold_img)
     print(f"Length of cifti2 brain_axis: {len(brain_ax)}")
 
 
@@ -194,9 +206,10 @@ def build_distance_matrix(
                   f"'{hemi}' distance matrix")
         else:
             distance_matrices[hemi] = mt.make_distance_matrix(
-                reference_img,
+                bold_img,
                 surface_files[hemi],
                 Path(output_path),
+                dtype=dtype,
                 num_procs=num_procs,
                 wb_command_path=mt.find_wb_command_path(wb_command_path),
                 work_dir=Path(output_path) / "tmp",
@@ -259,15 +272,15 @@ def build_distance_matrix(
     #     and everywhere. Doing this in three chunks avoids duplication of
     #     memory, but takes a little longer (seconds, not minutes).
 
-    sc_to_lh_dist = np.uint8(np.clip(
+    sc_to_lh_dist = dtype(np.clip(
         cdist(subcortical_coordinates, lh_surf_coords) + 0.5,
         0, 255
     ))
-    sc_to_rh_dist = np.uint8(np.clip(
+    sc_to_rh_dist = dtype(np.clip(
         cdist(subcortical_coordinates, rh_surf_coords) + 0.5,
         0, 255
     ))
-    sc_to_sc_dist = np.uint8(np.clip(
+    sc_to_sc_dist = dtype(np.clip(
         cdist(subcortical_coordinates, subcortical_coordinates) + 0.5,
         0, 255
     ))
@@ -286,11 +299,11 @@ def build_distance_matrix(
     # (3) Create two filler blocks of distances safely larger than threshold
     top_mid_lh_rh = 255 * np.ones(
         (distance_matrices['lh'].shape[0], distance_matrices['rh'].shape[1]),
-        dtype=np.uint8
+        dtype=dtype
     )
     mid_mid_rh_lh = 255 * np.ones(
         (distance_matrices['rh'].shape[0], distance_matrices['lh'].shape[1]),
-        dtype=np.uint8
+        dtype=dtype
     )
 
     # Put complete distance matrix together with real and filler data
@@ -311,7 +324,7 @@ def remove_cortical_influence_from_subcortex(
     # Only calculate distance to real cortical vertices that may get used.
     cort_idx = mt.get_cortical_indices(bold_img)
     subcort_idx = mt.get_subcortical_indices(bold_img)
-    distance_matrix = distance_img.get_fdata()
+    distance_matrix = distance_img.get_fdata().astype(np.uint8)
     relevant_distances = distance_matrix[subcort_idx, :][:, cort_idx]
     if verbose:
         print(f"  filtered distance matrix to {relevant_distances.shape[0]:,} "
@@ -415,7 +428,7 @@ def get_good_loci_indices(bold_img, excluded_structures=None, verbose=False):
 
 
 def build_connectivity_matrix(
-        bold_img, dist_img, good_loci, dist_threshold, verbose=False
+        bold_img, dist_img, good_loci, dist_threshold, dtype=np.float32, verbose=False
 ):
     """ """
 
@@ -423,7 +436,7 @@ def build_connectivity_matrix(
     # dist_data = dist_img.get_fdata()[good_loci, :][:, good_loci]
     bold_brain_axis = mt.get_brain_model_axes(bold_img)
     connectivity = mt.correlate_bold(
-        bold_img.get_fdata(), strip_size=8*1024, verbose=verbose
+        bold_img.get_fdata(dtype=dtype), strip_size=8*1024, verbose=verbose
     )
 
     # Remove the diagonal (set to zero)
@@ -433,7 +446,7 @@ def build_connectivity_matrix(
               "after removing diagonal")
 
     # Remove edges where nodes are nearer than the distance threshold
-    connectivity[dist_img.get_fdata() <= dist_threshold] = 0.0
+    connectivity[dist_img.get_fdata(dtype=np.float32) <= dist_threshold] = 0.0
     if verbose:
         print(f"  {np.sum(connectivity > 0.0):,} edges remain "
               "after removing local edges")
@@ -464,6 +477,7 @@ def build_pajek_networks(
     # systems running this code. By using asanyarray(dataobj), both
     # distance_matrix and connectivity fully loaded in under 80GB.
     distance_matrix = np.asanyarray(dist_img.dataobj)
+    dist_img.uncache()  # use extracted matrix, no longer need dist_img's cache
     if verbose:
         print(f"  Original distance matrix is shaped {distance_matrix.shape}")
         print(f"  removing subcort-subcort edges")
@@ -472,7 +486,7 @@ def build_pajek_networks(
                        if idx in good_loci]
     distance_matrix[np.ix_(subcort_indices, subcort_indices)] = 0.0
     if verbose:
-        print(f"  D1 is shaped {distance_matrix.shape}")
+        print(f"  D1 (sans subcortical edges) is shaped {distance_matrix.shape}")
         print(f"  D1 has {np.sum(distance_matrix > 0.0):,} non-zero edges.")
         print(f"  D1 has {np.sum(distance_matrix == 0.0):,} zero edges.")
         print(f"  D1 has {np.sum(distance_matrix <= dist_threshold):,} local edges.")
@@ -482,7 +496,7 @@ def build_pajek_networks(
     distance_matrix = distance_matrix[good_loci, :][:, good_loci]
     if verbose:
         print(f"  filtering D1 by acceptable structures")
-        print(f"  D2 is shaped {distance_matrix.shape}")
+        print(f"  D2 (with only 'good' loci) is shaped {distance_matrix.shape}")
         print(f"  D2 has {np.sum(distance_matrix > 0.0):,} non-zero edges.")
         print(f"  D2 has {np.sum(distance_matrix == 0.0):,} zero edges.")
         print(f"  D2 has {np.sum(distance_matrix <= dist_threshold):,} local edges.")
@@ -502,11 +516,14 @@ def build_pajek_networks(
     log_notes = list()
 
     connectivity = np.asanyarray(connectivity_img.dataobj)[good_loci, :][:, good_loci]
+    connectivity_img.uncache()  # clear memory from original img cache
     if verbose:
         print(f"  connectivity has {np.sum(connectivity > 0.0):,} positive edges.")
 
     # Create a mask with all False until we decide what to keep.
     hi_conn_mask = np.zeros(connectivity.shape, dtype=bool)
+    if verbose:
+        print(f"  matching boolean mask has {len(hi_conn_mask.ravel()):,} zero edges.")
     # for each column in the connectivity matrix, find the highest
     # correlations and add those edges to the mask for that location's
     # column AND row.
@@ -587,7 +604,7 @@ def main():
         return 0
 
     # Fetch some prerequisites
-    surface_files = {
+    template_surface_files = {
         'lh': tflow.get(
             'fsLR', suffix='midthickness', extension='surf.gii', hemi='L'
         ),
@@ -595,17 +612,37 @@ def main():
             'fsLR', suffix='midthickness', extension='surf.gii', hemi='R'
         ),
     }
+    # The BOLD file from xcp_d is like "sub-P10002_ses-10002_task-rest_run-01_space-fsLR_den-91k_desc-denoised_bold.dtseries.nii"
+    # The surface file is like "sub-P10003_ses-10003_space-fsLR_den-32k_hemi-L_desc-hcp_midthickness.surf.gii"
+    surf_file_template = "sub-{0}_ses-{1}_space-fsLR_den-32k_hemi-{2}_desc-hcp_midthickness.surf.gii"
+    key_pairs = get_bids_key_pairs(args.input_file.name)
+    surface_files = {
+        'lh': (args.input_file.parent / ".." / "anat" /
+               surf_file_template.format(key_pairs['sub'], key_pairs['ses'], 'L')),
+        'rh': (args.input_file.parent / ".." / "anat" /
+               surf_file_template.format(key_pairs['sub'], key_pairs['ses'], 'R')),
+    }
+
     np.random.seed(args.random_seed)
 
     ## Step 1. Load the concatenated and cleaned BOLD data.
+    if args.verbose:
+        print("=" * 80)
+        print(f"| Step 1. Starting mfs_make_infomap_networks.py at {dt_start}")
+        print("=" * 80)
     bold_img = nib.cifti2.Cifti2Image.from_filename(args.input_file)
     bold_brain_axis = mt.get_brain_model_axes(bold_img)
     bold_series_axis = mt.get_series_axes(bold_img)
     if args.verbose:
         print(f"  loaded BOLD with {len(bold_brain_axis)} loci, "
-              f"{len(bold_series_axis)} time points.")
+              f"{len(bold_series_axis)} time points. "
+              f"({len(bold_brain_axis) * len(bold_series_axis) / 1000000:0,.0f}M values)")
 
     ## Step 2. Load the distance matrix (or build it).
+    if args.verbose:
+        print("=" * 80)
+        print(f"| Step 2. Load or build individual distance matrix at {dt_start}")
+        print("=" * 80)
     if args.distance_matrix_file == "na":
         setattr(args, "distance_matrix_file",
                 args.output_path / "fsLR_distance.dconn.nii")
@@ -617,11 +654,23 @@ def main():
         # distance_matrix = distance_img.get_fdata()
         if args.verbose:
             print(f"  loaded distance matrix with {distance_img.shape[0]} "
-                  f"loci.")
+                  f"loci."
+                  f"({distance_img.shape[0] * distance_img.shape[0] / 1000000:0,.0f}M values)")
     else:
         # Generate and save a distance matrix.
+        # I checked and verified that xcp_d's surfaces in the anat directory
+        # are unique to each subject and different from the fsLR template.
+        # That tells me that they are each individual's cortical surface,
+        # not truly "fsLR" or "hcp" suggested by the named file.
+        # If we look into the fmriprep anat, the midthickness.surf.gii
+        # files are also unique to each subject, but with 140k vertices.
+
+        if args.verbose:
+            print(f"  building distance matrix from BOLD and {surface_files['lh'].name} and {surface_files['rh'].name}...")
         distance_matrix = build_distance_matrix(
             bold_img,
+            surface_files['lh'],
+            surface_files['rh'],
             num_procs=args.num_procs,
             wb_command_path=args.wb_command_path,
             output_path=args.output_path,
@@ -634,9 +683,13 @@ def main():
         distance_img.to_filename(args.distance_matrix_file)
         if args.verbose:
             print(f"  built distance matrix with {distance_img.shape[0]} "
-                  f"loci.")
+                  f"loci. ({sys.getsizeof(distance_img.dataobj) / 1000000:0,.0f}M bytes)")
 
     ## Step 3. Regress Cortical signal from Subcortical voxels.
+    if args.verbose:
+        print("=" * 80)
+        print(f"| Step 3. Remove cortical signal from subcortical voxels at {dt_start}")
+        print("=" * 80)
     if args.verbose:
         print(f"Starting to regress cortical signal from subcortical voxels.")
     bold_regr_file = (
@@ -645,7 +698,8 @@ def main():
     )
     if bold_regr_file.exists():
         bold_regr_img = nib.cifti2.Cifti2Image.from_filename(bold_regr_file)
-        print(f"  loaded post-regression BOLD from '{bold_regr_file.name}'.")
+        print(f"  loaded post-regression BOLD from '{bold_regr_file.name}'. "
+                  f"({bold_regr_img.shape[0] * bold_regr_img.shape[0] / 1000000:0,.0f}M values)")
     else:
         bold_regr_img = remove_cortical_influence_from_subcortex(
             bold_img, distance_img, args.distance_to_cortex_threshold,
@@ -656,12 +710,20 @@ def main():
 
     # Report on whether regression changed anything
     if args.verbose:
-        # We expect some of the regions to change, but most to remain identical
+        # We expect some regions to change, but most to remain identical
         mt.compare_mats(bold_img.get_fdata(), bold_regr_img.get_fdata(),
                         "Original BOLD", "Regressed BOLD",
                         verbose=args.verbose)
 
+    # We are done with the original bold_img, using bold_regr_img from here
+    bold_img.uncache()
+    del bold_img
+
     ## Step 4. Smoothing
+    if args.verbose:
+        print("=" * 80)
+        print(f"| Step 4. Smooth BOLD residuals at {dt_start}")
+        print("=" * 80)
     smoothed_images = dict()
     for k in args.smoothing_kernel_sizes:
         output_file = str(bold_regr_file).replace(
@@ -689,11 +751,19 @@ def main():
             'k': k,
         }
 
-    # Step 6. Infomap (and connectivity)
+    # Step 5. Infomap (and connectivity)
+    if args.verbose:
+        print("=" * 80)
+        print(f"| Step 5. Build InfoMap Networks at {dt_start}")
+        print("=" * 80)
     # get a list of loci indices to filter connectivity and infomap anatomy
     idx_good_loci = get_good_loci_indices(
         bold_regr_img, args.exclude_structures, verbose=args.verbose
     )
+
+    # We're done with bold_regr_img, using smoothed versions from here
+    bold_regr_img.uncache()
+    del bold_regr_img
 
     for k, img_dict in smoothed_images.items():
         print(f"Starting smoothing kernel {k:0.2f}...")
@@ -713,6 +783,12 @@ def main():
             )
             dconn_img.to_filename(dconn_file)
             print(f"  built {dconn_img.shape} connectivity")
+            # Save to disk, then clear memory.
+            # We need it later, but can't hold multiple dconns at once
+            dconn_img.uncache()
+
+        # Once we have connectivity, we no longer need BOLD
+        img_dict['img'].uncache()
 
         # Then, build networks from the connectivity
         for graph_density in args.graph_densities:
@@ -738,10 +814,11 @@ def main():
                     verbose=args.verbose
                 )
                 mt.write_pajek_file(
-                    hi_conn_idx, dconn_img.get_fdata(),
+                    hi_conn_idx, dconn_img.get_fdata(dtype=np.float32),
                     network_file,
                     verbose=True
                 )
+                dconn_img.uncache()
                 with open(log_file, 'w') as f:
                     f.write("\n".join(log_notes))
             if not clu_file.exists():
@@ -811,10 +888,13 @@ def main():
             if args.verbose:
                 print(f"    saved {str(cifti_label_file)}; "
                       f"done with d={graph_density:0.4f}")
+
     dt_end = datetime.now()
     if args.verbose:
         print(f"Finished mfs_make_infomap_networks at {dt_end} "
               f"(elapsed {dt_end - dt_start})")
+
+    return 0
 
 
 if __name__ == "__main__":
