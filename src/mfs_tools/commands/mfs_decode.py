@@ -301,8 +301,8 @@ def load_and_mask_data(
     decoder_img = nib.load(decoder_file)
     decoder_weights = decoder_img.get_fdata()
     if verbose:
-        print(f"A {decoder_weights.shape} decoder was loaded with "
-              f"{np.sum(decoder_weights.astype('bool')):,} hot voxels")
+        print(f"Decoder {decoder_file.stem}, shaped {decoder_weights.shape} "
+              f"loaded with {np.sum(decoder_weights.astype('bool')):,} hot voxels")
 
     # We regularly deal with decoders that are in LAS+ (FSL's MNI152)
     # rather than RAS+ (templateflow's MNI152s) or in a different
@@ -338,8 +338,9 @@ def load_and_mask_data(
         x_res, y_res, z_res = decoder_img.header.get_zooms()
         voxel_volume = x_res * y_res * z_res
         decoder_vol = np.sum((decoder_weights != 0.0).astype('bool')) * voxel_volume
+        zooms = ", ".join([f"{z:0.2f}" for z in decoder_img.header.get_zooms()])
         print(f"  the decoder's non-zero weights {decoder_img.shape}, "
-              f"{decoder_img.header.get_zooms()}, {decoder_vol:0.1f}mm3")
+              f"({zooms}), {decoder_vol:0.1f}mm3")
     else:
         # Assuming the mask and weights are in the same space
         mask_img = nib.load(mask_file)
@@ -425,7 +426,7 @@ def predict_y(data, weights, verbose=False):
         words = "extracted", "from decoder volume"
 
     if verbose:
-        print(f"  {words[0]} {len(weights)} weights {words[1]}")
+        print(f"  - {words[0]} {len(weights)} weights {words[1]}")
 
     if data.shape[0] == weights.shape[0]:
         # No intercept, use as-is
@@ -531,7 +532,7 @@ def main(args):
             ("ones", np.ones((weight_data.shape[0], 1))),
             ("weights", weight_data),
         ]:
-            print(f"Shape of weights: {weights.shape}")
+            print(f"  - shape of weights: {weights.shape}")
             predicted_y = predict_y(bold_data, weights, args.verbose)
             if np.sum(np.isnan(predicted_y)) > 0:
                 print("NaN values in predicted y, no scores!")
