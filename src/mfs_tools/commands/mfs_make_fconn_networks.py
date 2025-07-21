@@ -18,6 +18,18 @@ from mfs_tools.library import yellow_on, red_on, green_on, color_off
 from mfs_tools.library.bids_stuff import get_bids_key_pairs
 
 
+"""
+This script reads in pre-processed BOLD data from xcp-d,
+builds Evan Gordon-style dense connectomes,
+and saves them out as network files, ready for infomap.
+This script will consume about 170GB RAM, which is why
+it is saved as its own module. The following steps, like
+running infomap on these outputs, can be run in far less
+memory and distributed differently across computing
+resources.
+"""
+
+
 def get_arguments():
     """ Parse command line arguments
     """
@@ -800,12 +812,6 @@ def main():
             log_file = (
                 args.output_path / network_file.name.replace(".net", ".log")
             )
-            clu_file = (
-                args.output_path / network_file.name.replace(".net", ".clu")
-            )
-            cifti_label_file = (
-                args.output_path / network_file.name.replace(".net", ".dlabel.nii")
-            )
 
             if not network_file.exists():
                 hi_conn_idx, log_notes = build_pajek_networks(
@@ -821,73 +827,6 @@ def main():
                 dconn_img.uncache()
                 with open(log_file, 'w') as f:
                     f.write("\n".join(log_notes))
-            if not clu_file.exists():
-                infomap_proc = subprocess.run(
-                    [
-                        mt.find_infomap_path(args.infomap_path),
-                        str(network_file),
-                        str(args.output_path),
-                        "--clu", "-2", "-s", "42", "-N", str(args.infomap_reps),
-                        "--no-self-links",
-                    ],
-                    capture_output=True,
-                )
-                with open(log_file, 'a') as f:
-                    f.write(infomap_proc.stdout.decode("utf-8"))
-                    f.write(infomap_proc.stderr.decode("utf-8"))
-
-            # Load infomap's parcellation and convert it to Cifti2
-            infomap_output = mt.load_infomap_clu_file(clu_file, verbose=True)
-            infomap_data = np.zeros(
-                (len(bold_brain_axis), 1), dtype=np.uint32
-            )
-            infomap_data[idx_good_loci, 0] = infomap_output.sort_values(
-                ['node_id', ]
-            ).reset_index(drop=True)['module'][idx_good_loci]
-
-            unique_communities = np.unique(infomap_data[:, 0])
-            print(graph_density, unique_communities)
-            for comm_idx, community_id in enumerate(unique_communities):
-                if community_id != 0:
-                    community_idx = np.where(
-                        infomap_data[:, 0] == community_id
-                    )[0]
-                    if len(community_idx) < 10:
-                        print(f"    removing density {graph_density:0.4f}'s "
-                              f"community {community_id} with only "
-                              f"{len(community_idx)} members.")
-                        infomap_data[community_idx, 0] = 0
-
-            # Package labels into Cifti2
-            my_cm = mt.generate_colormap(64)
-            first_label = nib.cifti2.Cifti2Label(0, "0", 0.0, 0.0, 0.0, 1.0)
-            rest_of_labels = [
-                nib.cifti2.Cifti2Label(n + 1, f"{n + 1}", *my_cm.colors[min(63, n)])
-                for n in range(len(np.unique(infomap_data)))
-            ]
-            all_labels = [first_label, ] + rest_of_labels
-            packageable_labels = dict([
-                (lbl.key, (lbl.label, (lbl.red, lbl.green, lbl.blue, lbl.alpha,)))
-                for lbl in all_labels
-            ])
-            label_axis = nib.cifti2.LabelAxis(
-                [f"density {graph_density:0.04f}", ],
-                packageable_labels,
-            )
-            # wb_view wants the brain_models along the columns, and the
-            # labels along the rows. So here we transpose our data and
-            # create axes to match.
-            if args.verbose:
-                print(f"    transposing infomap_data from {infomap_data.shape} "
-                      f"to {infomap_data.T.shape}")
-            network_label_img = nib.cifti2.Cifti2Image(
-                infomap_data.T, (label_axis, bold_brain_axis)
-            )
-            network_label_img.update_headers()
-            network_label_img.to_filename(cifti_label_file)
-            if args.verbose:
-                print(f"    saved {str(cifti_label_file)}; "
-                      f"done with d={graph_density:0.4f}")
 
     dt_end = datetime.now()
     if args.verbose:
