@@ -477,9 +477,31 @@ def main():
                 subject_id, demographics.loc[subject_id]
             )
         else:
-            subject_dict = get_subject_data(
-                subject_id, pd.Series(dtype=str)
-            )
+            if len(demographics.index) > 0:
+                match_demo = re.match(r"([A-Za-z]+)([0-9]+)", str(demographics.index[0]))
+                match_subs = re.match(r"([A-Za-z]+)([0-9]+)", str(subject_id))
+                if match_demo and (len(match_demo.groups()) == 2) and (match_subs is None):
+                    # Shorten demographics IDs to match subject_id
+                    short_index = pd.Index(
+                        [i[len(match_demo.group(1)):]
+                         for i in demographics.index]
+                    )
+                    # Change demographics object,
+                    # causing future searches to work the first time.
+                    demographics.index = short_index
+                    subject_dict = get_subject_data(
+                        subject_id, demographics.loc[subject_id]
+                    )
+                elif match_subs and (match_demo is None) and (len(match_subs.groups()) == 2):
+                    # Shorten subject_id to match demographics table
+                    subject_dict = get_subject_data(
+                        subject_id, demographics.loc[match_subs.group(2)]
+                    )
+                else:
+                    # Just use an empty Series, we have no demographic data
+                    subject_dict = get_subject_data(
+                        subject_id, pd.Series(dtype=str)
+                    )
 
         # Some outputs have session directories, some don't.
         session_subdirs = sorted(
