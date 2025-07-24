@@ -200,20 +200,31 @@ def get_block_metadata(data, start_time, end_time):
     """ Get characteristics of this block from events data.
     """
 
-    df = data[(data['onset'] > start_time) & (data['onset'] < end_time)]
+    # Find the end of this block and avoid any data past it.
+    # Skip the first record; it's a "memory" trial.
+    data_past_start_time = data[data['onset'] > start_time].iloc[1:, :]
+    last_onset = start_time
+    for idx, row in data_past_start_time.sort_values('onset').iterrows():
+        last_onset = row['onset']
+        if row['trial_type'] in ["memory", "fixation", ]:
+            break
+    print(f"The last onset for this block is at {last_onset:0.3f}. "
+          f"52s End time was {end_time:0.3f}.")
+
+    df = data[(data['onset'] > start_time) & (data['onset'] < last_onset)]
     try:
         memory = df[
             df['trial_type'] == 'memory'
-            ]['stimulus'].iloc[0]
+        ]['stimulus'].iloc[0]
         instruction = df[
             df['trial_type'] == 'instruct'
-            ]['stimulus'].iloc[0]
+        ]['stimulus'].iloc[0]
         feel_bad = df[
             df['stimulus'] == 'How badly do you feel?'
-            ]['response'].iloc[0]
+        ]['response'].iloc[0]
         vividness = df[
             df['stimulus'] == 'How vivid was the memory?'
-            ]['response'].iloc[0]
+        ]['response'].iloc[0]
 
         # Retrieve the actual timing bookends for this memory+instruct block
         memory_onset = float(
@@ -228,7 +239,11 @@ def get_block_metadata(data, start_time, end_time):
         instruct_duration = float(
             df[df['trial_type'] == 'instruct']['duration'].iloc[0]
         )
-        block_end = instruct_onset + instruct_duration
+        arrow_onset = float(
+            df[df['trial_type'] == 'arrow']['onset'].iloc[0]
+        )
+        # block_end = instruct_onset + instruct_duration
+        block_end = last_onset - 0.001
     except IndexError:
         return None
 
@@ -240,6 +255,7 @@ def get_block_metadata(data, start_time, end_time):
         "memory_onset": memory_onset,
         "memory_duration": memory_duration,
         "instruct_onset": instruct_onset,
+        "arrow_onset": arrow_onset,
         "block_end": block_end
     }
 
@@ -352,6 +368,7 @@ def get_blocks_from_run(subject, session, run_dir, raw_func_dir, args):
         # Extract only timepoints in this block (ignoring other 3)
         # the 52s gets past the memory/instruct without hitting the next block.
         # This was 40 in Conte, is 52 in BPD, not sure if there's a universal.
+        # The end_time is no longer used. get_block_metadata finds the end now.
         block_metadata = get_block_metadata(
             timing_data, memory.onset - 0.01, memory.onset + 52.0
         )
@@ -374,6 +391,9 @@ def get_blocks_from_run(subject, session, run_dir, raw_func_dir, args):
         ))
         instruct_idx = int(np.floor(
             (block_metadata['instruct_onset'] + args.hrf_shift) / args.tr_dim
+        ))
+        arrow_idx = int(np.floor(
+            (block_metadata['arrow_onset'] + args.hrf_shift) / args.tr_dim
         ))
         end_idx = int(np.ceil(
             (block_metadata['block_end'] + args.hrf_shift) / args.tr_dim
@@ -404,6 +424,7 @@ def get_blocks_from_run(subject, session, run_dir, raw_func_dir, args):
                 "orig_start_tr": memory_idx + args.steady_state_outliers,
                 "memory_tr": memory_idx,  # Final, in ss-cropped reference
                 "instruct_tr": instruct_idx,  # Final, in ss-cropped reference
+                "arrow_tr": arrow_idx,  # Final, in ss-cropped reference
                 "end_tr": end_idx,  # Final, in ss-cropped reference
                 "max_fd": 0 if max_fd is None else max_fd,
                 "fd_outliers": num_fd_outliers,
@@ -460,7 +481,7 @@ def main():
     subject_dirs = sorted(
         list(args.input_dir.glob("U*")) +
         list(args.input_dir.glob("ERBPD[0-9][0-9][0-9]")) +
-        list(args.input_dir.glob("sub-*"))
+        list(args.input_dir.glob("sub-*03"))
     )
     if args.verbose:
         print(f"Found {len(subject_dirs)} subject directories.")
@@ -516,9 +537,9 @@ def main():
             if session_dir == subject_dir:
                 session_id = "na"
             else:
-                session_id = get_val_from_key(session_subdirs[0].name, "ses")
+                session_id = get_val_from_key(session_dir.name, "ses")
                 if session_id is None:
-                    session_id = get_val_from_key(session_subdirs[0].name, "session")
+                    session_id = get_val_from_key(session_dir.name, "session")
 
             run_dirs = sorted(
                 list(session_dir.glob(f"task-{args.task}/run-*")) +
@@ -528,12 +549,13 @@ def main():
             if "task" in session_dir.name:
                 run_dirs += list(session_dir.glob("run*"))
             for run_dir in run_dirs:
-                raw_func_dir_candidates = list(
-                    (args.rawdata_path / f"sub-{subject_id}").glob(f"ses-*/func")
-                )
-                if len(raw_func_dir_candidates) > 0:
-                    raw_func_dir = raw_func_dir_candidates[0]
-                else:
+                raw_func_dir = args.rawdata_path / f"sub-{subject_id}" / f"ses-{session_id}" / "func"
+                # raw_func_dir_candidates = list(
+                #     (args.rawdata_path / f"sub-{subject_id}").glob(f"ses-{session_id}/func")
+                # )
+                # if len(raw_func_dir_candidates) > 0:
+                #     raw_func_dir = raw_func_dir_candidates[0]
+                if not raw_func_dir.exists():
                     print("|*")
                     print(f"|* WARNING: no raw func dir for {subject_id}")
                     print("|*")
@@ -614,13 +636,16 @@ def main():
                 # For anyone aligning these scores with other timeseries,
                 # orig_tr matches the original un-cropped BOLD file
                 tr_delta = result['instruct_tr'] - result['memory_tr']
+                tr_arrow_delta = result['arrow_tr'] - result['memory_tr']
                 result['tr_from_scan_start'] = tr + result['orig_start_tr']
                 result['tr_from_memory'] = tr
                 result['tr_from_instruct'] = tr - tr_delta
+                result['tr_from_arrows'] = tr - tr_arrow_delta
                 # Avoid later ambiguity and confusion from too many options
                 del result['orig_start_tr']
                 del result['memory_tr']
                 del result['instruct_tr']
+                del result['arrow_tr']
 
                 result['decoder'] = dec_name
                 for dec_wt in scores[per_id][dec_name].keys():
@@ -673,7 +698,8 @@ def main():
         'abuse_phys', 'abuse_sex', 'neg_emot', 'neg_phys',
         'task', 'session', 'run', 'instruct', 'period', 'pid',
         'max_fd', 'fd_outliers', 'feel_bad', 'vividness',
-        'tr_from_scan_start', 'tr_from_memory', 'tr_from_instruct',
+        'tr_from_scan_start', 'tr_from_memory',
+        'tr_from_instruct', 'tr_from_arrows',
         'decoder', 'weighted_score', 'average_score',
     ]
     final_results = final_results.sort_values(
