@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime
 import subprocess
 
-from mfs_tools.library import red_on, color_off
+from mfs_tools.library import red_on, green_on, color_off
 from mfs_tools.library.file_stuff import find_wb_command_path
 
 
@@ -265,3 +265,67 @@ def correlate_with_workbench(bold_file, dconn_file, verbose=False):
         print(f"{red_on}{corr_proc.stderr.decode('utf8')}{color_off}")
 
     return True if corr_proc.returncode == 0 else False
+
+
+def get_good_loci_indices(bold_img, excluded_structures=None, verbose=False):
+    """ """
+
+    # We don't use this, it's just an empty list, but it would seem to allow
+    # the user to exclude some vertices.
+    bad_vertices = list()
+    excluded_structures = list() if excluded_structures is None else excluded_structures
+
+    # Ensure we have more than zero valid structures to work with
+    # I don't know why, but Lynch's code only includes the 10 regions
+    # with distinct LEFT or RIGHT, but this excludes BRAIN_STEM.
+    # I'll exclude it here, too, so code matches, but maybe we can
+    # revisit if we have brainstem-specific hypotheses.
+    # Lynch also put ACCUMBENS in his code twice, one of them
+    # probably replacing 'DIENCEPHALON_VENTRAL', so only
+    # 18 regions remain out of the original 21. We won't match exactly,
+    # because using all bilateral regions seems better.
+    anat_axis = get_brain_model_axes(bold_img)
+    # The 'anat_axis' already has 85,059 loci,
+    # just like matlab's BrainStructure and BrainStructureLabel,
+    # so we don't need to do anything else with it here.
+    # List the 21 unique region names from 85,059 copies
+    all_structures, all_counts = np.unique(
+        [str(name) for name in anat_axis.name], return_counts=True
+    )
+    dropped_structures = list()
+    structures = list()
+    for i, structure in enumerate(all_structures):
+        keep_structure = True
+        locus_str = "vertices" if "CORTEX" in structure else "voxels"
+        if verbose:
+            print(f"  {structure: <42}  ", end="")
+        for excluded_structure in excluded_structures:
+            if (    (excluded_structure.upper() in str(structure).upper()) or
+                    (f"{excluded_structure}_LEFT".upper() in str(structure).upper()) or
+                    (f"{excluded_structure}_RIGHT".upper() in str(structure).upper())
+            ):
+                if structure not in dropped_structures:
+                    keep_structure = False
+        if keep_structure:
+            structures.append(structure)
+            if verbose:
+                print(f"{green_on}+{color_off}  ({all_counts[i]:,} {locus_str})")
+        else:
+            dropped_structures.append(structure)
+            if verbose:
+                print(f"{red_on}-{color_off}  ({all_counts[i]:,} {locus_str})")
+    if verbose:
+        print(f"  found {len(all_structures)} structures, "
+              f"excluded {len(dropped_structures)} of them,"
+              f"and kept {len(structures)} of them.")
+
+    # Now go through each locus to determine if it's in our list of structures.
+    locus_mask = [str(s) in structures for s in anat_axis.name]
+    locus_indices = np.where(locus_mask)[0]
+    print(f"  Filtering structures leaves {len(locus_indices)} loci")
+
+    # Further, remove any pre-designated bad vertices
+    locus_indices = [li for li in locus_indices if li not in bad_vertices]
+    print(f"  Removing bad verts leaves {len(locus_indices)} loci")
+
+    return locus_indices
