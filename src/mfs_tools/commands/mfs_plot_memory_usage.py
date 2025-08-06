@@ -140,7 +140,7 @@ class App:
         """ Parse command line arguments """
     
         parser = argparse.ArgumentParser(
-            description="plot_memory_usage.py will read memory log files "
+            description="plot_memory_usage.py will read a memory log file "
                         "and plot the time taken for each portion of the "
                         "algorithm alongside the memory consumed.",
         )
