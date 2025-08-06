@@ -400,7 +400,8 @@ def main():
     """
     if args.force or not clu_file.exists():
         if args.verbose:
-            print(f"Starting infomap ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ...")
+            print(f"Starting infomap ({smoothing_fwhm}, {graph_density}) "
+                  f"({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ...")
         infomap_proc = subprocess.run(
             [
                 mt.find_infomap_path(args.infomap_path),
@@ -446,9 +447,10 @@ def main():
                 infomap_data[:, 0] == community_id
             )[0]
             if len(community_idx) < 10:
-                print(f"    removing density {graph_density:0.4f}'s "
-                      f"community {community_id} with only "
-                      f"{len(community_idx)} members.")
+                # if args.verbose:
+                #     print(f"    removing density {graph_density:0.4f}'s "
+                #           f"community {community_id} with only "
+                #           f"{len(community_idx)} members.")
                 infomap_data[community_idx, 0] = 0
 
     # Package labels into Cifti2
