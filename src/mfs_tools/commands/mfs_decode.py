@@ -55,7 +55,8 @@ def get_arguments():
     parser.add_argument(
         "decoder_files",
         nargs="+",
-        help="One or more files containing 3D decoder weights",
+        help="One or more files containing 3D decoder weights. "
+             "Each decoder will get its own output file. ",
     )
     parser.add_argument(
         "--decoder-mask",
