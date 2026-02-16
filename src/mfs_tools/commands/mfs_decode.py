@@ -256,7 +256,7 @@ def remove_motion(bold_img, confound_file, scale='zscore', strategy='',
         print(f"Extracting 'csf_wm' and six motion columns from confounds file")
         confounds = confounds[motion_6_cols + ['csf_wm', ] + spike_cols]
     elif strategy == "motion_25":
-        print(f"Extracting csf_wm' and 24 motion columns from confounds file")
+        print(f"Extracting 'csf_wm' and 24 motion columns from confounds file")
         confounds = confounds[motion_24_cols + ['csf_wm', ] + spike_cols]
 
 
@@ -271,8 +271,17 @@ def remove_motion(bold_img, confound_file, scale='zscore', strategy='',
                      standardize=scale, standardize_confounds=False).T
 
     # Another way is to replicate matlab exactly and do all of this manually:
-    beta_motion = np.dot(bold_img.get_fdata(), np.linalg.pinv(confounds.values).T)
-    motion_residuals = bold_img.get_fdata() - np.dot(beta_motion, confounds.values.T)
+    beta_motion = np.dot(
+        bold_img.get_fdata(),
+        np.linalg.pinv(np.nan_to_num(confounds.values)).T
+    )
+    motion_residuals = (
+        bold_img.get_fdata() -
+        np.dot(
+            beta_motion,
+            np.nan_to_num(confounds.values).T
+        )
+    )
 
     if scale == 'zscore':
         # Compute z scores across voxel rows, NOT time columns
