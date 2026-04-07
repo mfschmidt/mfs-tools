@@ -158,11 +158,15 @@ def find_infomap_path(suggested_path=None):
     if (
             (suggested_path is not None) and
             Path(suggested_path).is_file() and
-            Path(suggested_path).name == "infomap"
+            Path(suggested_path).name.lower() == "infomap"
     ):
         return Path(suggested_path)
 
-    path_suggestions = list(Path("/home").glob("*/.virtualenvs/*/bin/infomap"))
+    path_suggestions = list(
+        Path("/home").glob("*/.virtualenvs/*/bin/infomap")
+    ) + list(
+        Path("/home").glob("*/Projects/infomap/Infomap")
+    )
     for p in path_suggestions:
         if p.is_file():
             return p
