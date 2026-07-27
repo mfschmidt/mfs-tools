@@ -111,12 +111,12 @@ class App:
         parser.add_argument(
             "--normalize", type=str, default="each",
             help="By default, --normalize each, the decoder weights are "
-                 "normalized to mean 0.0 and sd 1.0, and the BOLD activity "
+                 "normalized to mean 0.0 and sd 1.0, and each voxel of BOLD activity "
                  "is normalized to mean 0.0 and sd 1.0 separately.\n"
                  "  'none' leaves both BOLD and decoder weights as they come.\n"
-                 "  'bold' normalizes the BOLD, but not the decoder.\n"
+                 "  'bold' normalizes the BOLD, temporally by voxel, but not the decoder.\n"
                  "  'decoder' normalizes decoder weights, but not the BOLD.\n"
-                 "  'each' normalizes decoder weights and BOLD separately.\n"
+                 "  'each' normalizes decoder weights and BOLD separately (default, recommended).\n"
                  "  'result' normalizes the final scores to 0+-1.\n",
         )
         parser.add_argument(
@@ -212,7 +212,7 @@ class App:
         if we_have_a_fatal_error:
             sys.exit(1)
 
-    def get_data_from_image(self, img, normalize=False):
+    def get_data_from_image(self, img):
         """ Extract the data from a nibabel image. """
 
         _data = np.array([])
@@ -262,28 +262,25 @@ class App:
             else:
                 raise ValueError(f"Unsupported CIFTI2 image with {len(img.header.mapped_indices)} ")
 
-        if self.args.normalize in ["bold", "each", ]:
-            return _data
-        else:
-            return _data
+        return _data
 
     def load_bold_image(self):
         """ Load the BOLD data file, smoothing and clipping as requested. """
 
         # Load the BOLD data whether from nifti or cifti
-        self.bold_img, bold_desc = get_img_and_desc(
+        _bold_img, _bold_desc = get_img_and_desc(
             self.args.bold_file,
             verbose=self.args.verbose
         )
         if self.args.verbose:
-            print(f"Loaded a {self.bold_img.shape} BOLD image")
+            print(f"Loaded a {_bold_img.shape} BOLD image")
 
         if (self.args.clip is not None) and (self.args.clip != 0):
             # Remove the initial volumes from the BOLD data
             if self.args.verbose:
                 print(f"  clip the first {self.args.clip} volumes")
-            self.bold_img = index_img(
-                self.bold_img, slice(self.args.clip, None), self.args.verbose
+            _bold_img = index_img(
+                _bold_img, slice(self.args.clip, None), self.args.verbose
             )
         else:
             if self.args.verbose:
@@ -296,11 +293,12 @@ class App:
             if self.args.verbose:
                 print(f"  smoothing the BOLD image with a "
                       f"{self.args.smooth:0.1f}mm Gaussian kernel")
-            self.bold_img = smooth_img(self.bold_img, self.args.smooth)
+            _bold_img = smooth_img(_bold_img, self.args.smooth)
 
-        self.bold_data = self.get_data_from_image(self.bold_img)
         if self.args.verbose:
-            print(f"Extracted {bold_desc} BOLD data with shape {self.bold_data.shape}")
+            print(f"Extracted {_bold_desc} BOLD data with shape {_bold_img.shape}")
+
+        return _bold_img
 
     def load_decoder_weights(self, decoder_file):
         """ Load the decoder data file. """
@@ -323,7 +321,8 @@ class App:
         # This resampling does NOT guarantee or even imply that the
         # brains will overlap or be co-registered. All decoders we've
         # encountered thus far are aligned with one of the MNI spaces,
-        # so this only works until we find a decoder in its own space.
+        # so this code works, but will emit invalid results if we ever
+        # find a decoder in its own space.
         if (
                 isinstance(self.bold_img, nib.Nifti1Image) or
                 isinstance(self.bold_img, nib.Nifti2Image)
@@ -351,7 +350,7 @@ class App:
 
         return decoder_img, decoder_weights
 
-    def save_bold_img(self, bold_data, img_path):
+    def unused_save_bold_img(self, bold_data, img_path):
         """ Save data to same image type as BOLD Image. """
 
         if isinstance(self.bold_img, nib.Nifti1Image) or isinstance(self.bold_img, nib.Nifti2Image):
@@ -398,7 +397,6 @@ class App:
 
     def remove_motion(
             self,
-            scale='zscore',
             strategy='',
             remove_spikes=True,
             method='manual'
@@ -414,6 +412,17 @@ class App:
         elif self.args.confounds.name.endswith(".par"):
             # If motion correction was done by FSL Feat, double-spaces
             confounds = pd.read_csv(self.args.confounds, sep=r'\s+', header=None)
+            if self.args.verbose:
+                print(f"loaded confounds for {len(confounds)} time points, "
+                      f"to match data with {self.bold_data.shape[-1]} time points")
+        elif self.args.confounds.name == "Movement_Regressors.txt":
+            # If motion correction was done by the HCP, variable space
+            confounds = pd.read_csv(self.args.confounds, sep=r'\s+', header=None)
+            confounds.rename(columns={
+                0: 'trans_x', 1: 'trans_y', 2: 'trans_z', 3: 'rot_x', 4: 'rot_y', 5: 'rot_z',
+                6: 'trans_x_derivative1', 7: 'trans_y_derivative1', 8: 'trans_z_derivative1',
+                9: 'rot_x_derivative1', 10: 'rot_y_derivative1', 11: 'rot_z_derivative1',
+            }, inplace=True)
             if self.args.verbose:
                 print(f"loaded confounds for {len(confounds)} time points, "
                       f"to match data with {self.bold_data.shape[-1]} time points")
@@ -475,17 +484,21 @@ class App:
 
         # One way is to do this with nilearn, in one line:
         if method == 'nilearn':
+            if self.args.normalize in ["bold", "each", ]:
+                scale = "zscore"
+            else:
+                scale = None
             # Nilearn insists we should de-trend or standardize.
             # For now, I prevent it to ensure these results are identical to matlab.
             return clean(self.bold_data.T, confounds=confounds.values, detrend=False,
                          standardize=scale, standardize_confounds=False).T
 
-        # Another way is to replicate matlab exactly and do all of this manually:
+        # Another way is to replicate Noam's matlab exactly and do all of this manually:
         beta_motion = np.dot(
             self.bold_data,
             np.linalg.pinv(np.nan_to_num(confounds.values)).T
         )
-        self.bold_residuals = (
+        _bold_residuals = (
             self.bold_data -
             np.dot(
                 beta_motion,
@@ -493,20 +506,21 @@ class App:
             )
         )
 
-        if scale == 'zscore':
-            # Compute z scores across voxel rows, NOT time columns
+        if self.args.normalize in ["bold", "each", ]:
+            # Compute z scores temporally, across voxel rows, NOT time columns
             # with population degrees of freedom, not sample
 
             # Python returns a row of NaN z-scores for a row of zero data.
             # Matlab returns a row of zeros, which is more useful.
             # Here, we zero out the NaNs to allow scoring via the other voxels.
-            raw_z = zscore(self.bold_residuals, axis=1, ddof=0)
-            self.bold_residuals = np.nan_to_num(raw_z, nan=0.0)
+            raw_z = zscore(_bold_residuals, axis=1, ddof=0)
+            _bold_residuals = np.nan_to_num(raw_z, nan=0.0)
             if self.args.verbose:
                 print(f"  After z-scoring, {np.sum(np.isnan(raw_z)):,} NaNs "
                       f"were changed to 0.0; {np.sum(np.isfinite(raw_z)):,} "
-                      f"were already finite. Z-scores shaped {self.bold_residuals.shape}.")
+                      f"were already finite. Z-scores shaped {_bold_residuals.shape}.")
 
+        return _bold_residuals
 
     def load_and_mask_data(
             self, decoder_file, mask_file=None, output_path=None
@@ -578,7 +592,7 @@ class App:
                 print(f"  the {decoder_weights.shape} decoder was masked down to "
                       f"{np.sum(decoder_weights.astype('bool')):,} hot voxels.")
 
-            if output_path:
+            if output_path and self.args.save_intermediates:
                 decoder_img.to_filename(output_path / f"decoder_{decoder_stem}_3{decoder_extension}")
 
         # The BOLD data were previously loaded, smoothed, and residualized
@@ -588,22 +602,22 @@ class App:
             dims = self.bold_img.shape
             voxels_per_volume = dims[0] * dims[1] * dims[2]
             bold_full_2d_data = np.reshape(
-                self.bold_data, (voxels_per_volume, dims[3]), order='F'
+                self.bold_residuals, (voxels_per_volume, dims[3]), order='F'
             )
             decoder_2d_data = np.reshape(
                 decoder_weights, voxels_per_volume, order='F'
             )
-            masked_bold_data = bold_full_2d_data[decoder_2d_data != 0]
+            masked_bold_residuals = bold_full_2d_data[decoder_2d_data != 0]
             decoder_2d_data = decoder_2d_data[decoder_2d_data != 0]
         elif isinstance(self.bold_img, nib.Cifti2Image):
             # bold_data is [loci, time]
-            masked_bold_data = self.bold_data[decoder_weights.ravel() != 0, :]
+            masked_bold_residuals = self.bold_residuals[decoder_weights.ravel() != 0, :]
             decoder_2d_data = decoder_weights[decoder_weights != 0]
         else:
             raise ValueError(f"Unsupported image type: {type(self.bold_img)}")
         if self.args.verbose:
-            print(f"  masked BOLD data are now shaped {masked_bold_data.shape} "
-                  f"and have {np.sum(masked_bold_data != 0.0):,} values.")
+            print(f"  masked BOLD data are now shaped {masked_bold_residuals.shape} "
+                  f"and have {np.sum(masked_bold_residuals != 0.0):,} values.")
             print(f"  weights are now shaped {decoder_2d_data.shape} "
                   f"and have {np.sum(decoder_2d_data != 0.0):,} values.")
 
@@ -614,7 +628,7 @@ class App:
         print(f"  mean weight value: {np.mean(weights):.3f} "
               f"({np.min(weights):.3f} to {np.max(weights):.3f})")
 
-        return masked_bold_data, weights, decoder_stem
+        return masked_bold_residuals, weights, decoder_stem
 
     def predict_y(self, data, weights):
         """ Use measured BOLD data (cleaned) to predict y """
@@ -627,9 +641,17 @@ class App:
             words = "created", "as ones"
         else:
             words = "extracted", "from decoder volume"
+            # Normalize decoder weights before decoding
+            if self.args.normalize in ["decoder", "each", ]:
+                weights = (weights - weights.mean()) / weights.std()
 
         if self.args.verbose:
             print(f"  - {words[0]} {len(weights)} weights {words[1]}")
+
+        # Normalize BOLD data before decoding
+        if self.args.normalize in ["bold", "each", ]:
+            data = data - data.mean(axis=-1, keepdims=True)
+            data = data / data.std(axis=-1, keepdims=True)
 
         if data.shape[0] == weights.shape[0]:
             # No intercept, use as-is
@@ -638,6 +660,9 @@ class App:
             # The weights have an intercept, add ones to the data
             x = np.append(data, np.ones((1, data.shape[1])), axis=0)
         y_hat = np.dot(weights.T, x).T
+
+        if self.args.normalize == "result":
+            y_hat = (y_hat - y_hat.mean()) / y_hat.std()
 
         # This is the decoder score for each t
         return y_hat
@@ -677,16 +702,22 @@ class App:
                 str(self.args.bold_file), len(self.args.decoder_files)
             ))
 
-        # Load the BOLD fMRI data
-        self.load_bold_image()
+        # 1. Load the BOLD fMRI data
+        self.bold_img = self.load_bold_image()
+        self.bold_data = self.get_data_from_image(self.bold_img)
+        # <state:> self.bold_img contains BOLD fMRI image, clipped and smoothed
+        # <state:> self.bold_data contains BOLD fMRI data from self.bold_img
 
         # Remove motion confounds from BOLD, if requested
         if self.args.confounds:
-            self.remove_motion(
-                scale='zscore',
+            self.bold_residuals = self.remove_motion(
                 strategy=self.args.confound_strategy,
                 remove_spikes=(not self.args.ignore_motion_outliers)
             )
+        else:
+            self.bold_residuals = self.bold_data
+        # <state:> self.bold_residuals contains BOLD fMRI data with motion confounds removed
+        # <state:> self.bold_data is not changed
 
         # TODO: Save self.bold_residuals as a cifti file or nifti file depending on context.
         # if self.args.save_intermediates:
@@ -717,16 +748,15 @@ class App:
                 intermediate_output_path = self.args.output_path
             else:
                 intermediate_output_path = None
-            bold_data, weight_data, decoder_name = self.load_and_mask_data(
+            masked_bold_residuals, weight_data, decoder_name = self.load_and_mask_data(
                 decoder_file, self.args.decoder_mask,
                 output_path=intermediate_output_path,
             )
             if self.args.verbose:
-                print(f"  shape of loaded data   : {self.bold_data.shape}")
-                if self.bold_residuals is not None:
-                    print(f"  shape of residual data : {self.bold_residuals.shape}")
-                print(f"  shape of weights       : {weight_data.shape}")
-                print(f"  shape of final data    : {bold_data.shape}")
+                print(f"  shape of loaded data    : {self.bold_data.shape}")
+                print(f"  shape of residual data  : {self.bold_residuals.shape}")
+                print(f"  shape of weights        : {weight_data.shape}")
+                print(f"  shape of final residuals: {masked_bold_residuals.shape}")
 
             if self.args.debug:
                 # Write out values from a specific region in each piece of data.
@@ -737,7 +767,7 @@ class App:
                 ("weights", weight_data),
             ]:
                 print(f"  - shape of weights: {weights.shape}")
-                predicted_y = self.predict_y(bold_data, weights)
+                predicted_y = self.predict_y(masked_bold_residuals, weights)
                 if np.sum(np.isnan(predicted_y)) > 0:
                     print("NaN values in predicted y, no scores!")
                 pd.DataFrame(predicted_y).to_csv(
