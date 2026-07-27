@@ -10,8 +10,11 @@ import numpy as np
 import pandas as pd
 from scipy.stats import zscore
 from nilearn.signal import clean
-from nilearn.image import resample_to_img, smooth_img, index_img
+from nilearn.image import resample_to_img, smooth_img  # , index_img
 from rich import print
+
+from mfs_tools.library.file_stuff import index_img  # Uses nilearn index_img for nifti, but also handles cifti
+
 
 if str(Path(__file__).parent.parent) not in sys.path:
     sys.path.append(str(Path(__file__).parent.parent))
@@ -106,6 +109,17 @@ class App:
                  "'motion_25' adds derivatives and powers to motion confounds.",
         )
         parser.add_argument(
+            "--normalize", type=str, default="each",
+            help="By default, --normalize each, the decoder weights are "
+                 "normalized to mean 0.0 and sd 1.0, and the BOLD activity "
+                 "is normalized to mean 0.0 and sd 1.0 separately.\n"
+                 "  'none' leaves both BOLD and decoder weights as they come.\n"
+                 "  'bold' normalizes the BOLD, but not the decoder.\n"
+                 "  'decoder' normalizes decoder weights, but not the BOLD.\n"
+                 "  'each' normalizes decoder weights and BOLD separately.\n"
+                 "  'result' normalizes the final scores to 0+-1.\n",
+        )
+        parser.add_argument(
             "--clip", type=int, default=0,
             help="Optionally, clip the first N volumes as non-steady-state"
                  "outliers, before smoothing or analysis. The confounds will "
@@ -198,8 +212,7 @@ class App:
         if we_have_a_fatal_error:
             sys.exit(1)
 
-    @staticmethod
-    def get_data_from_image(img):
+    def get_data_from_image(self, img, normalize=False):
         """ Extract the data from a nibabel image. """
 
         _data = np.array([])
@@ -249,11 +262,15 @@ class App:
             else:
                 raise ValueError(f"Unsupported CIFTI2 image with {len(img.header.mapped_indices)} ")
 
-        return _data
+        if self.args.normalize in ["bold", "each", ]:
+            return _data
+        else:
+            return _data
 
     def load_bold_image(self):
         """ Load the BOLD data file, smoothing and clipping as requested. """
 
+        # Load the BOLD data whether from nifti or cifti
         self.bold_img, bold_desc = get_img_and_desc(
             self.args.bold_file,
             verbose=self.args.verbose
@@ -262,15 +279,19 @@ class App:
             print(f"Loaded a {self.bold_img.shape} BOLD image")
 
         if (self.args.clip is not None) and (self.args.clip != 0):
+            # Remove the initial volumes from the BOLD data
             if self.args.verbose:
                 print(f"  clip the first {self.args.clip} volumes")
-            self.bold_img = index_img(self.bold_img, slice(self.args.clip, self.bold_img.shape[-1]))
+            self.bold_img = index_img(
+                self.bold_img, slice(self.args.clip, None), self.args.verbose
+            )
         else:
             if self.args.verbose:
                 if self.args.clip is None:
                     print(f"  not clipping any volumes, --clip was not set.")
                 if self.args.clip == 0:
                     print(f"  not clipping any volumes, --clip was set to 0.")
+
         if (self.args.smooth is not None) and (self.args.smooth != 0.0):
             if self.args.verbose:
                 print(f"  smoothing the BOLD image with a "
@@ -278,7 +299,6 @@ class App:
             self.bold_img = smooth_img(self.bold_img, self.args.smooth)
 
         self.bold_data = self.get_data_from_image(self.bold_img)
-
         if self.args.verbose:
             print(f"Extracted {bold_desc} BOLD data with shape {self.bold_data.shape}")
 
@@ -576,6 +596,7 @@ class App:
             masked_bold_data = bold_full_2d_data[decoder_2d_data != 0]
             decoder_2d_data = decoder_2d_data[decoder_2d_data != 0]
         elif isinstance(self.bold_img, nib.Cifti2Image):
+            # bold_data is [loci, time]
             masked_bold_data = self.bold_data[decoder_weights.ravel() != 0, :]
             decoder_2d_data = decoder_weights[decoder_weights != 0]
         else:

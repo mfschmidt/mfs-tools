@@ -8,6 +8,54 @@ import nibabel as nib
 import scipy.io as sio
 from collections import namedtuple
 from nibabel.filebasedimages import ImageFileError
+from nilearn.image import index_img as nil_index_img
+
+
+def get_cifti_axes(img, only_dims=False, verbose=False):
+    """ From a Cifti2Image, return a list of dicts with axes and properties. """
+
+    axes = dict()
+    for idx, axis in enumerate(img.header.mapped_indices):
+        ax = img.header.get_axis(axis)
+        ax_type = None
+        desc = None
+        if verbose:
+            print(f"  found cifti2 '{str(type(ax))}' axis")
+        if isinstance(ax, nib.cifti2.SeriesAxis):
+            ax_type = "SeriesAxis"
+            tr_str = f" {ax.step:.2f} {getattr(ax, 'unit', '')} TRs"
+            if only_dims:
+                desc = str(ax.size)
+            else:
+                desc = f"{ax.size}{tr_str}"
+        if isinstance(ax, nib.cifti2.BrainModelAxis):
+            ax_type = "BrainModelAxis"
+            if only_dims:
+                desc = str(ax.size)
+            else:
+                desc = f"{ax.size} grayordinates: "\
+                       f"{np.sum(ax.volume_mask):,} voxels & "\
+                       f"{np.sum(ax.surface_mask):,} vertices"
+        if isinstance(ax, nib.cifti2.LabelAxis):
+            ax_type = "LabelAxis"
+            if only_dims:
+                desc = str(len(ax.label[0].keys()))
+            else:
+                desc = f"{len(ax.label[0].keys())} labels"
+        if isinstance(ax, nib.cifti2.ScalarAxis):
+            ax_type = "ScalarAxis"
+            if only_dims:
+                desc = str(ax.size)
+            else:
+                desc = f"{ax.size} scalars"
+        axes[idx] = {
+            "type": ax_type,
+            "length": len(ax),
+            "desc": desc,
+            "axis": ax,
+        }
+
+    return axes
 
 
 def get_img_and_desc(file_path, only_dims=False, verbose=False):
@@ -52,44 +100,18 @@ def get_img_and_desc(file_path, only_dims=False, verbose=False):
         else:
             file_type = "file"
 
-        axes_strs = list()
-        for axis in img.header.mapped_indices:
-            ax = img.header.get_axis(axis)
-            if verbose:
-                print(f"  found cifti2 '{str(type(ax))}' axis")
-            if isinstance(ax, nib.cifti2.SeriesAxis):
-                tr_str = f" {ax.step:.2f} {getattr(ax, 'unit', '')} TRs"
-                if only_dims:
-                    axes_strs.append(str(ax.size))
-                else:
-                    axes_strs.append(f"{ax.size}{tr_str}")
-            if isinstance(ax, nib.cifti2.BrainModelAxis):
-                if only_dims:
-                    axes_strs.append(str(ax.size))
-                else:
-                    axes_strs.append(f"{ax.size} grayordinates: "
-                                     f"{np.sum(ax.volume_mask):,} voxels & "
-                                     f"{np.sum(ax.surface_mask):,} vertices")
-            if isinstance(ax, nib.cifti2.LabelAxis):
-                if only_dims:
-                    axes_strs.append(str(len(ax.label[0].keys())))
-                else:
-                    axes_strs.append(f"{len(ax.label[0].keys())} labels")
-            if isinstance(ax, nib.cifti2.ScalarAxis):
-                if only_dims:
-                    axes_strs.append(str(ax.size))
-                else:
-                    axes_strs.append(f"{ax.size} scalars")
-        if len(axes_strs) > 0:
+        axes = get_cifti_axes(img, only_dims, verbose)
+        if len(axes) > 0:
             if only_dims:
-                desc = ",".join(axes_strs)
+                desc = ",".join([ax.get('desc', '?') for i, ax in sorted(axes.items())])
             else:
-                desc = f"Cifti2 {file_type}: ({' * '.join(axes_strs)})"
+                desc = f"Cifti2 {file_type}: ({' * '.join([ax.get('desc', '?') for i, ax in sorted(axes.items())])})"
         else:
             if only_dims:
                 desc = ",".join([str(dim) for dim in img.shape])
             else:
                 desc = f"Cifti2 {file_type}: {img.shape}"
+
     elif isinstance(img, nib.gifti.gifti.GiftiImage):
         axes_strs = list()
         for arr in img.darrays:
@@ -111,6 +133,56 @@ def get_img_and_desc(file_path, only_dims=False, verbose=False):
 
 
     return img, desc
+
+
+def index_img(img, img_slice, verbose=False):
+    """ Extract frames from a BOLD image along the time axis. """
+
+    if (
+            isinstance(img, nib.nifti1.Nifti1Image) or
+            isinstance(img, nib.nifti2.Nifti2Image)
+    ):
+        if img_slice.stop is None:
+            img_slice = slice(
+                img_slice.start, img.shape[-1], img_slice.step
+            )
+        return nil_index_img(img, img_slice)
+    elif isinstance(img, nib.cifti2.cifti2.Cifti2Image):
+        # Get the axes from the loaded Cifti2 Image
+        axes = get_cifti_axes(img, only_dims=False, verbose=verbose)
+        # Find the SeriesAxis and slice it to match the sliced data.
+        new_axes = list()
+        for idx, d in sorted(axes.items()):
+            if d.get("type", "") == "SeriesAxis":
+                if img_slice.stop is not None:
+                    ax_size = img_slice.stop
+                else:
+                    ax_size = len(d['axis'])
+                img_slice = slice(img_slice.start, ax_size, img_slice.step)
+                new_axes.append(nib.cifti2.SeriesAxis(
+                    start=img_slice.start, step=d['axis'].step, size=ax_size,
+                    unit=d['axis'].unit,
+                ))
+            else:
+                new_axes.append(d['axis'])
+        # Package it back up into a new Cifti2Image containing the indexed data
+        new_img = nib.cifti2.Cifti2Image(
+            img.get_fdata()[img_slice, :], new_axes
+        )
+        if verbose:
+            print(f"    indexed {img.shape}-shaped image to "
+                  f"{new_img.shape}-shaped image via {img_slice}.")
+            first_few_orig_values_str = ", ".join(
+                [f'{_:0.1f}' for _ in img.get_fdata()[:6, :].mean(axis=1)]
+            )
+            print(f"    first few orig mean values: [{first_few_orig_values_str}]")
+            first_few_values_str = ", ".join(
+                [f'{_:0.1f}' for _ in new_img.get_fdata()[:6, :].mean(axis=1)]
+            )
+            print(f"    first few crop mean values: [{first_few_values_str}]")
+        return new_img
+    else:
+        raise ValueError(f"Unsupported image type: {type(img)}")
 
 
 def get_cifti_desc(file_path):
