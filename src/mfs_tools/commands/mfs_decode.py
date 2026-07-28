@@ -408,13 +408,13 @@ class App:
             confounds = pd.read_csv(self.args.confounds, sep='\t', header=0)
             if self.args.verbose:
                 print(f"loaded confounds for {len(confounds)} time points, "
-                      f"to match data with {self.bold_data.shape[-1]} time points")
+                      f"to match data with {self.bold_img.shape[-1]} time points")
         elif self.args.confounds.name.endswith(".par"):
             # If motion correction was done by FSL Feat, double-spaces
             confounds = pd.read_csv(self.args.confounds, sep=r'\s+', header=None)
             if self.args.verbose:
                 print(f"loaded confounds for {len(confounds)} time points, "
-                      f"to match data with {self.bold_data.shape[-1]} time points")
+                      f"to match data with {self.bold_img.shape[-1]} time points")
         elif self.args.confounds.name == "Movement_Regressors.txt":
             # If motion correction was done by the HCP, variable space
             confounds = pd.read_csv(self.args.confounds, sep=r'\s+', header=None)
@@ -425,14 +425,14 @@ class App:
             }, inplace=True)
             if self.args.verbose:
                 print(f"loaded confounds for {len(confounds)} time points, "
-                      f"to match data with {self.bold_data.shape[-1]} time points")
+                      f"to match data with {self.bold_img.shape[-1]} time points")
         else:
             if self.args.verbose:
                 print(f"[yellow]WARNING : No confound file, not removing motion"
                       f"[/yellow]")
             raise FileNotFoundError(f"Could not find '{self.args.confounds}'")
 
-        confound_clip_num = len(confounds) - self.bold_data.shape[-1]
+        confound_clip_num = len(confounds) - self.bold_img.shape[-1]
         if confound_clip_num > 0:
             if self.args.verbose:
                 print(f"Clipping first {confound_clip_num} of {len(confounds)} "
@@ -450,7 +450,6 @@ class App:
                 print(f"Including {len(spike_cols)} motion outlier (spike) columns")
         else:
             spike_cols = []
-
 
         # If a specific strategy was requested, extract the appropriate columns
         cols_to_use = confounds.columns
@@ -481,6 +480,8 @@ class App:
 
         # Ensure the y-intercept, or arbitrary mean BOLD, doesn't make a difference.
         confounds['bias'] = 1.0
+
+        # TODO: Remove NaN loci from bold_data before regressing
 
         # One way is to do this with nilearn, in one line:
         if method == 'nilearn':
@@ -523,7 +524,7 @@ class App:
         return _bold_residuals
 
     def load_and_mask_data(
-            self, decoder_file, mask_file=None, output_path=None
+            self, decoder_file, mask_file=None, save_to=None
     ):
         """ Load 4D bold data, mask it, and return 2D matrix. """
 
@@ -534,8 +535,8 @@ class App:
         # The BOLD image is the standard; weights and masks must be resampled
         # to match it, not the other way around.
         decoder_img, decoder_weights = self.load_decoder_weights(decoder_file)
-        if self.args.output_path is not None:
-            decoder_img.to_filename(self.args.output_path / f"decoder_{decoder_stem}_2{decoder_extension}")
+        if self.args.save_intermediates and save_to is not None:
+            decoder_img.to_filename(save_to / f"decoder_{decoder_stem}_orig{decoder_extension}")
 
         # Now that we have the decoder in BOLD space, should we also mask it?
         if mask_file is None:
@@ -561,7 +562,7 @@ class App:
                 print(f"  a {mask_img.shape} mask was loaded with "
                       f"{np.sum(mask_img.get_fdata().astype('bool')):,} hot voxels")
             if (    (not np.allclose(self.bold_img.affine, mask_img.affine)) or
-                    (self.bold_data.shape != mask_img.shape)
+                    (self.bold_img.shape != mask_img.shape)
             ):
                 print(f"  [yellow]WARNING : The decoder weights and the mask "
                       f"are not in the same space. Resampling...[/yellow]")
@@ -592,8 +593,8 @@ class App:
                 print(f"  the {decoder_weights.shape} decoder was masked down to "
                       f"{np.sum(decoder_weights.astype('bool')):,} hot voxels.")
 
-            if output_path and self.args.save_intermediates:
-                decoder_img.to_filename(output_path / f"decoder_{decoder_stem}_3{decoder_extension}")
+            if self.args.save_intermediates and save_to is not None:
+                decoder_img.to_filename(save_to / f"decoder_{decoder_stem}_final{decoder_extension}")
 
         # The BOLD data were previously loaded, smoothed, and residualized
         # Handle 4D data as [all_voxels x time] 2D matrix.
@@ -744,16 +745,12 @@ class App:
                       f"but there should be two. Trying again to generate "
                       f"both scores files for {decoder_file.name}.")
 
-            if self.args.save_intermediates:
-                intermediate_output_path = self.args.output_path
-            else:
-                intermediate_output_path = None
             masked_bold_residuals, weight_data, decoder_name = self.load_and_mask_data(
                 decoder_file, self.args.decoder_mask,
-                output_path=intermediate_output_path,
+                save_to=self.args.output_path,
             )
             if self.args.verbose:
-                print(f"  shape of loaded data    : {self.bold_data.shape}")
+                print(f"  shape of loaded data    : {self.bold_img.shape}")
                 print(f"  shape of residual data  : {self.bold_residuals.shape}")
                 print(f"  shape of weights        : {weight_data.shape}")
                 print(f"  shape of final residuals: {masked_bold_residuals.shape}")
