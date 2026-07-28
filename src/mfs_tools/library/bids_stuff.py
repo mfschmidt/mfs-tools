@@ -20,7 +20,7 @@ def get_bids_key_pairs(bids_filename):
     """
 
     bids_key_pairs = dict()
-    bids_pattern_template = ".*{key}-([A-Z0-9a-z]+)_.*"
+    bids_pattern_template = ".*(?:^|_){key}-([A-Z0-9a-z]+)_.*"
     for bids_key in ('sub', 'ses', 'task', 'run', ):
         match = re.match(
             bids_pattern_template.format(key=bids_key), bids_filename,
