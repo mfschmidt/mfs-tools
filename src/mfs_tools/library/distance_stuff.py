@@ -256,16 +256,17 @@ def regress_adjacent_cortex(
         print(f"  found {len(outer_voxel_indices):,} voxels within "
               f"{distance_threshold}mm of a cortical vertex.")
 
-    # Regress surrounding signal from each voxel near cortex
+    # Regress surrounding signal from each subcortical voxel near cortex
     for cifti_locus_index in outer_voxel_indices:
+        voxel_index = subcort_idx[cifti_locus_index]
+
         # Extract all BOLD data within 20mm of this voxel
-        dist_mask = distance_matrix[cifti_locus_index, :] <= distance_threshold
+        dist_mask = distance_matrix[voxel_index, :] <= distance_threshold
         nearby_bold = bold_cifti.get_fdata()[:, dist_mask]
         if nearby_bold.shape[1] > 1:
             nearby_bold = np.mean(nearby_bold, axis=1)
 
         # Regress surrounding BOLD from this voxel's BOLD
-        voxel_index = subcort_idx[cifti_locus_index]
         y = bold_cifti.get_fdata()[:, voxel_index]
         results = stats.linregress(nearby_bold, y)
         predicted_y = results.intercept + results.slope * nearby_bold
