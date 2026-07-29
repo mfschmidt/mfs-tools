@@ -105,6 +105,7 @@ class App:
                  "'motion_7' adds csf_wm to the six motion confounds."
                  "'motion_25' adds derivatives and powers to motion confounds.",
         )
+        """
         parser.add_argument(
             "--normalize", type=str, default="each",
             help="By default, --normalize each, the decoder weights are "
@@ -116,6 +117,7 @@ class App:
                  "  'each' normalizes decoder weights and BOLD separately (default, recommended).\n"
                  "  'result' normalizes the final scores to 0+-1.\n",
         )
+        """
         parser.add_argument(
             "--clip", type=int, default=0,
             help="Optionally, clip the first N volumes as non-steady-state"
@@ -218,6 +220,12 @@ class App:
                           f"decoder scores already exist at {str(self.args.output_path)}. "
                           f"Running to fill in the missing scores.[/red]")
         self.args.output_path.mkdir(parents=True, exist_ok=True)
+
+        if self.args.confound_strategy not in ['motion_6', 'motion_7', 'motion_25']:
+            print(f"[red]ERROR: --confound-strategy must be one of "
+                  f"'motion_6', 'motion_7', or 'motion_25'. "
+                  f"Got {self.args.confound_strategy}[/red]")
+            we_have_a_fatal_error = True
 
         if we_have_a_fatal_error:
             sys.exit(1)
@@ -457,25 +465,25 @@ class App:
 
         # One way is to do this with nilearn, in one line:
         if method == 'nilearn':
-            if self.args.normalize in ["bold", "each", ]:
-                scale = "zscore"
-            else:
-                scale = None
+            # This is no longer user-selectable. z-scoring the BOLD on the time axis
+            # is the correct approach.
+            scale = "zscore"
             # Nilearn insists we should de-trend or standardize.
             # For now, I prevent it to ensure these results are identical to matlab.
             return clean(self.bold_data.T, confounds=confounds.values, detrend=False,
                          standardize=scale, standardize_confounds=False).T
 
         # Another way is to replicate Noam's matlab exactly and do all of this manually:
+        # These bold_data are not normalized yet, and that's OK.
         beta_motion = np.dot(
             self.bold_data,
-            np.linalg.pinv(np.nan_to_num(confounds.values)).T
+            np.linalg.pinv(np.nan_to_num(confounds.values, nan=0.0)).T
         )
         _bold_residuals = (
             self.bold_data -
             np.dot(
                 beta_motion,
-                np.nan_to_num(confounds.values).T
+                np.nan_to_num(confounds.values, nan=0.0).T
             )
         )
         # One example, for visualization of what just happened:
@@ -567,49 +575,36 @@ class App:
             words = "created", "as ones"
         else:
             words = "extracted", "from decoder volume"
-            # Normalize decoder weights before decoding
-            if self.args.normalize in ["decoder", "each", ]:
-                w_meta_pre = (
-                    np.mean(weights), np.std(weights), np.sum(weights != 0.0), weights.shape
-                )
-                weights = zscore(weights)
-                weights = (weights - weights.mean()) / weights.std()
-                w_meta_post = (
-                    np.mean(weights), np.std(weights), np.sum(weights != 0.0), weights.shape
-                )
-                if self.args.verbose:
-                    print(f"    - decoder weights before z-scoring: shape {w_meta_pre[3]}; mean {w_meta_pre[0]:.2f} "
-                          f"+- {w_meta_pre[1]:.2f} with {w_meta_pre[2]:,} non-zero weights")
-                    print(f"    - decoder weights before z-scoring: shape {w_meta_post[3]}; mean {w_meta_post[0]:.2f} "
-                          f"+- {w_meta_post[1]:.2f} with {w_meta_post[2]:,} non-zero weights")
+            # Do NOT normalize decoder weights before decoding
 
         if self.args.verbose:
             print(f"  - {words[0]} {len(weights)} weights {words[1]}")
 
         # Normalize BOLD data before decoding
-        if self.args.normalize in ["bold", "each", ]:
-            d_meta_pre = (
-                np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
-            )
-            time_axis = len(data.shape) - 1
-            data = zscore(data, axis=time_axis, ddof=0)
-            data = np.nan_to_num(data, nan=0.0)
-            d_meta_post = (
-                np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
-            )
-            if self.args.verbose:
-                print(f"    - BOLD before z-scoring along time axis {time_axis}: "
-                      f"shape {d_meta_pre[3]}; mean {d_meta_pre[0]:.2f} "
-                      f"+- {d_meta_pre[1]:.2f} with {d_meta_pre[2]:,} non-zero values")
-                print(f"    - BOLD before z-scoring along time axis {time_axis}: "
-                      f"shape {d_meta_post[3]}; mean {d_meta_post[0]:.2f} "
-                      f"+- {d_meta_post[1]:.2f} with {d_meta_post[2]:,} non-zero values")
+        d_meta_pre = (
+            np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
+        )
+        time_axis = len(data.shape) - 1
+        data = zscore(data, axis=time_axis, ddof=0)
+        data = np.nan_to_num(data, nan=0.0)
+        d_meta_post = (
+            np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
+        )
+        if self.args.verbose:
+            print(f"    - BOLD before z-scoring along time axis {time_axis}: "
+                  f"shape {d_meta_pre[3]}; mean {d_meta_pre[0]:.2f} "
+                  f"+- {d_meta_pre[1]:.2f} with {d_meta_pre[2]:,} non-zero values")
+            print(f"    - BOLD before z-scoring along time axis {time_axis}: "
+                  f"shape {d_meta_post[3]}; mean {d_meta_post[0]:.2f} "
+                  f"+- {d_meta_post[1]:.2f} with {d_meta_post[2]:,} non-zero values")
 
         # According to Claude, adding an intercept to the data is inappropriate.
         # It would only make sense if we had access to the original classifier's
         # fitted intercept, and only if the absolute score mattered.
         # Since we only care about scores relative to other subjects' scores,
-        # we will leave intercepts out of it.
+        # we will leave intercepts out of it. Moreover, normalizing the
+        # weights is also inappropriate since they aren't simple features,
+        # but parameters from the fitted classifier that should remain unchanged.
         """
         if data.shape[0] == weights.shape[0]:
             # No intercept, use as-is
@@ -624,9 +619,8 @@ class App:
             print(f"    - Scores: "
                   f"shape {y_hat.shape}; mean {np.mean(y_hat):.2f} "
                   f"+- {np.std(y_hat):.2f} with {np.sum(y_hat != 0.0)} non-zero scores")
-        if self.args.normalize == "result":
-            y_hat = (y_hat - y_hat.mean()) / y_hat.std()
 
+        # Do NOT normalize scores; they should be comparable between subjects and groups.
         # This is the decoder score for each t
         return y_hat
 
@@ -733,8 +727,14 @@ class App:
             combined_mask = self.combine_bold_and_decoder_masks(
                 bold_data_nonzero_mask, decoder_mask
             )
-            """
             assert(bold_data_nonzero_mask.shape == decoder_mask.shape)
+            """
+            if bold_data_nonzero_mask.shape != decoder_mask.shape:
+                raise ValueError(
+                    f"The masked BOLD data are shaped "
+                    f"{bold_data_nonzero_mask.shape} and the masked decoder "
+                    f"weights are shaped {decoder_mask.shape}. "
+                    f"They must have the same shape.")
             combined_mask = bold_data_nonzero_mask & decoder_mask
             decoder_weights = decoder_wts[combined_mask]
 
@@ -764,7 +764,7 @@ class App:
                 self.write_some_matrices(self.bold_img.get_fdata()[:, :, :, 1])
 
             for label, weights in [
-                ("ones", np.ones((decoder_weights.shape[0], 1))),
+                ("ones", np.ones(decoder_weights.shape[0])),
                 ("weights", decoder_weights),
             ]:
                 if self.args.verbose:
