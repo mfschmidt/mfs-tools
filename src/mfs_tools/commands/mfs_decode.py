@@ -531,6 +531,8 @@ class App:
             # (I haven't implemented masks in Cifti2)
             # They could be binary or only use a subset of voxels and vertices
             mask_img = nib.load(mask_file)
+            if isinstance(mask_img, nib.Cifti2Image):
+                raise ValueError("Cifti2 mask images are not yet supported.")
             if self.args.verbose:
                 print(f"  a {mask_img.shape} mask was loaded with "
                       f"{np.sum(mask_img.get_fdata().astype('bool')):,} hot voxels")
