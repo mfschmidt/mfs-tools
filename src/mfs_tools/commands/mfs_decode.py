@@ -596,7 +596,7 @@ class App:
             print(f"    - BOLD before z-scoring along time axis {time_axis}: "
                   f"shape {d_meta_pre[3]}; mean {d_meta_pre[0]:.2f} "
                   f"+- {d_meta_pre[1]:.2f} with {d_meta_pre[2]:,} non-zero values")
-            print(f"    - BOLD before z-scoring along time axis {time_axis}: "
+            print(f"    - BOLD after z-scoring along time axis {time_axis}: "
                   f"shape {d_meta_post[3]}; mean {d_meta_post[0]:.2f} "
                   f"+- {d_meta_post[1]:.2f} with {d_meta_post[2]:,} non-zero values")
 
