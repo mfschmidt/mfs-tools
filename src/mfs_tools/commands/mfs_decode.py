@@ -39,9 +39,6 @@ blocks/periods/trials however they like.
 
 """
 
-# Trigger printing in red to highlight problems
-err = f"[red]ERROR: [/red]"
-
 def get_env(args):
     """ Integrate environment variables into our args. """
 
@@ -161,28 +158,41 @@ class App:
 
         we_have_a_fatal_error = False
 
+        def path_ok(p, desc, optional):
+            fatal_error = False
+            if p is None:
+                if not optional:
+                    if self.args.verbose:
+                        print(f"[red]Path for '{desc}' is required, but not provided.[/red]")
+                    fatal_error = True
+                return None, fatal_error
+            else:
+                if Path(p).exists():
+                    if self.args.verbose:
+                        print(f"[green]Path '{p}' exists for '{desc}'.[/green]")
+                else:
+                    if self.args.verbose:
+                        print(f"[red]Path '{p}' for '{desc}' does not exist.[/red]")
+                    if not optional:
+                        fatal_error = True
+                return Path(p).resolve(), fatal_error
+
         for p, desc, optional in [
             (self.args.bold_file, 'bold_file', False),
             (self.args.decoder_mask, 'decoder_mask', True),
             (self.args.confounds, 'confounds', True),
-        ] + [
-            (decoder_file, f'decoder_file {i}', False)
+        ]:
+            p_as_path, fatality = path_ok(p, desc, optional)
+            we_have_a_fatal_error |= fatality
+            setattr(self.args, desc, p_as_path)
+
+        for i, p, desc, optional in [
+            (i, decoder_file, f'decoder_file {i}', False)
             for i, decoder_file in enumerate(self.args.decoder_files)
         ]:
-            if p is not None and Path(p).exists():
-                if self.args.verbose:
-                    print(f"[green]Path '{p}' exists for '{desc}'.[/green]")
-                setattr(self.args, desc, Path(p).resolve())
-            elif p is not None and not Path(p).exists():
-                if self.args.verbose:
-                    print(f"[red]Path '{p}' for '{desc}' does not exist.[/red]")
-                we_have_a_fatal_error = True
-            elif p is None and not optional:
-                if self.args.verbose:
-                    print(f"[red]Path for '{desc}' is required, but not provided.[/red]")
-                we_have_a_fatal_error = True
-            else:
-                print(f"No optional '{desc}' will be applied.")
+            p_as_path, fatality = path_ok(p, desc, optional)
+            we_have_a_fatal_error |= fatality
+            self.args.decoder_files[i] = p_as_path
 
         # Store paths as Path objects rather than strings
         setattr(self.args, "output_path", Path(self.args.output_path).resolve())
@@ -293,7 +303,12 @@ class App:
             if self.args.verbose:
                 print(f"  smoothing the BOLD image with a "
                       f"{self.args.smooth:0.1f}mm Gaussian kernel")
+            if isinstance(_bold_img, nib.cifti2.Cifti2Image):
+                print(f"  ERROR: Cifti2Images cannot be smoothed yet. "
+                      "Use Nifti or run without smoothing.")
+                sys.exit(1)
             _bold_img = smooth_img(_bold_img, self.args.smooth)
+            # TODO: Cifti2Images cannot be smoothed this way. Figure it out.
 
         if self.args.verbose:
             print(f"Extracted {_bold_desc} BOLD data with shape {_bold_img.shape}")
@@ -349,51 +364,6 @@ class App:
                       f" hot voxels")
 
         return decoder_img, decoder_weights
-
-    def unused_save_bold_img(self, bold_data, img_path):
-        """ Save data to same image type as BOLD Image. """
-
-        if isinstance(self.bold_img, nib.Nifti1Image) or isinstance(self.bold_img, nib.Nifti2Image):
-            save_img = self.bold_img.__class__(bold_data, self.bold_img.affine, self.bold_img.header)
-            save_img.to_filename(img_path)
-            return
-        if isinstance(self.bold_img, nib.Cifti2Image):
-            series_axis, brain_axis, new_data = None, None, None
-            for ax_idx in self.bold_img.header.mapped_indices:
-                ax = self.bold_img.header.get_axis(ax_idx)
-                if isinstance(ax, nib.cifti2.cifti2_axes.SeriesAxis):
-                    tr_len = ax.step
-                    series_axis = nib.cifti2.SeriesAxis(
-                        start=0, step=tr_len, size=len(ax)
-                    )
-                elif isinstance(ax, nib.cifti2.cifti2_axes.BrainModelAxis):
-                    brain_axis = ax
-
-            if series_axis and brain_axis:
-                if (
-                    (self.bold_data.shape[0] == len(series_axis)) and
-                    (self.bold_data.shape[1] == len(brain_axis))
-                ):
-                    new_data = bold_data
-                elif (
-                    (self.bold_data.shape[1] == len(series_axis)) and
-                    (self.bold_data.shape[0] == len(brain_axis))
-                ):
-                    new_data = bold_data.T
-                else:
-                    raise ValueError(f"Bold image {self.bold_img.shape} does "
-                                     f"not match data shape {bold_data.shape} ")
-            if new_data is not None:
-                new_img = nib.cifti2.Cifti2Image(
-                    new_data, (series_axis, brain_axis)
-                )
-                new_img.update_headers()
-                new_img.to_filename(img_path)
-            else:
-                raise ValueError(f"Bold image {self.bold_img.shape} does not "
-                                 f"have expected SeriesAxis and BrainModelAxis.")
-        else:
-            raise TypeError(f"Unsupported image type: {type(self.bold_img)}")
 
     def remove_motion(
             self,
@@ -452,7 +422,7 @@ class App:
             spike_cols = []
 
         # If a specific strategy was requested, extract the appropriate columns
-        cols_to_use = confounds.columns
+        cols_to_use = []
         motion_6_cols = ['trans_x', 'trans_y', 'trans_z', 'rot_x', 'rot_y', 'rot_z']
         deriv_6_cols = [f"{motion}_derivative1" for motion in motion_6_cols]
         power_6_cols = [f"{motion}_power2" for motion in motion_6_cols]
@@ -476,12 +446,14 @@ class App:
             if self.args.verbose:
                 print(f"Extracting 'csf_wm' and 24 motion columns from confounds "
                       f"file (actual {len(cols_to_use)} columns)")
+        else:
+            print(f"Extracting nothing from confounds "
+                  f"file (actual {len(cols_to_use)} columns)")
+            cols_to_use = []
         confounds = confounds[cols_to_use]
 
         # Ensure the y-intercept, or arbitrary mean BOLD, doesn't make a difference.
         confounds['bias'] = 1.0
-
-        # TODO: Remove NaN loci from bold_data before regressing
 
         # One way is to do this with nilearn, in one line:
         if method == 'nilearn':
@@ -506,37 +478,30 @@ class App:
                 np.nan_to_num(confounds.values).T
             )
         )
-
-        if self.args.normalize in ["bold", "each", ]:
-            # Compute z scores temporally, across voxel rows, NOT time columns
-            # with population degrees of freedom, not sample
-
-            # Python returns a row of NaN z-scores for a row of zero data.
-            # Matlab returns a row of zeros, which is more useful.
-            # Here, we zero out the NaNs to allow scoring via the other voxels.
-            raw_z = zscore(_bold_residuals, axis=1, ddof=0)
-            _bold_residuals = np.nan_to_num(raw_z, nan=0.0)
-            if self.args.verbose:
-                print(f"  After z-scoring, {np.sum(np.isnan(raw_z)):,} NaNs "
-                      f"were changed to 0.0; {np.sum(np.isfinite(raw_z)):,} "
-                      f"were already finite. Z-scores shaped {_bold_residuals.shape}.")
+        # One example, for visualization of what just happened:
+        # self.bold_data, for a small decoder, might be shaped [1000 voxels x 500 frames]
+        # confounds would be something like [500 frames x 30 confounds (24 motion + 5 spikes + a bias)]
+        # beta_motion <= [1000 x 30]
+        # _bold_residuals <= [1000 x 500]
 
         return _bold_residuals
 
-    def load_and_mask_data(
-            self, decoder_file, mask_file=None, save_to=None
+    def load_decoder(
+            self, decoder_file, mask_file=None
     ):
-        """ Load 4D bold data, mask it, and return 2D matrix. """
+        """ Load 3D decoder volume or 2D grayordinates, mask it, and return 2D matrix. """
 
         # Name the decoder, without the .nii.gz
         decoder_stem = Path(decoder_file).name.split(".")[0]
         decoder_extension = "".join(Path(decoder_file).suffixes)
 
-        # The BOLD image is the standard; weights and masks must be resampled
-        # to match it, not the other way around.
+        # The BOLD image is the standard; weights and masks are resampled
+        # to match it, not the other way around (done in load_decoder_weights).
         decoder_img, decoder_weights = self.load_decoder_weights(decoder_file)
-        if self.args.save_intermediates and save_to is not None:
-            decoder_img.to_filename(save_to / f"decoder_{decoder_stem}_orig{decoder_extension}")
+        if self.args.save_intermediates:
+            decoder_img.to_filename(self.args.output_path / f"decoder_{decoder_stem}_orig{decoder_extension}")
+        # Calculate the default mask, all voxels with non-zero weights
+        decoder_mask = decoder_weights != 0.0
 
         # Now that we have the decoder in BOLD space, should we also mask it?
         if mask_file is None:
@@ -571,67 +536,27 @@ class App:
                 mask_vol = np.sum((mask_img.get_fdata() != 0.0).astype('bool')) * voxel_volume
                 print(f"  the mask started as {mask_img.shape}, "
                       f"{mask_img.header.get_zooms()}, {mask_vol:0.1f}mm3")
-                resampled_mask = resample_to_img(
+                resampled_mask_img = resample_to_img(
                     mask_img, self.bold_img,
                     interpolation='nearest', force_resample=True
                 )
-                x_res, y_res, z_res = resampled_mask.header.get_zooms()
+                x_res, y_res, z_res = resampled_mask_img.header.get_zooms()
                 voxel_volume = x_res * y_res * z_res
-                mask_vol = np.sum((resampled_mask.get_fdata() != 0.0).astype('bool')) * voxel_volume
-                print(f"  it was resampled to {resampled_mask.shape}, "
-                      f"{resampled_mask.header.get_zooms()}, {mask_vol:0.1f}mm3")
+                mask_vol = np.sum((resampled_mask_img.get_fdata() != 0.0).astype('bool')) * voxel_volume
+                print(f"  it was resampled to {resampled_mask_img.shape}, "
+                      f"{resampled_mask_img.header.get_zooms()}, {mask_vol:0.1f}mm3")
                 # print(f"[red]The mask must be in the same space as the decoder.[/red]")
                 # raise ValueError("Decoder/Mask mismatch")
             else:
-                resampled_mask = mask_img
+                resampled_mask_img = mask_img
 
             # Binarize the mask and filter the decoder weights by it.
-            one_hot_mask = resampled_mask.get_fdata().astype("bool").astype("uint8")
-            decoder_weights = decoder_weights * one_hot_mask
-            decoder_img = nib.Nifti1Image(decoder_weights, decoder_img.affine)
-            if self.args.verbose:
-                print(f"  the {decoder_weights.shape} decoder was masked down to "
-                      f"{np.sum(decoder_weights.astype('bool')):,} hot voxels.")
+            explicit_mask = resampled_mask_img.get_fdata().astype("bool")
+            decoder_mask &= explicit_mask
 
-            if self.args.save_intermediates and save_to is not None:
-                decoder_img.to_filename(save_to / f"decoder_{decoder_stem}_final{decoder_extension}")
+        return decoder_img, decoder_weights.flatten(), decoder_mask.flatten()
 
-        # The BOLD data were previously loaded, smoothed, and residualized
-        # Handle 4D data as [all_voxels x time] 2D matrix.
-        if isinstance(self.bold_img, nib.Nifti1Image) or isinstance(self.bold_img, nib.Nifti2Image):
-            # To match matlab and the weights, this MUST be done in fortran order.
-            dims = self.bold_img.shape
-            voxels_per_volume = dims[0] * dims[1] * dims[2]
-            bold_full_2d_data = np.reshape(
-                self.bold_residuals, (voxels_per_volume, dims[3]), order='F'
-            )
-            decoder_2d_data = np.reshape(
-                decoder_weights, voxels_per_volume, order='F'
-            )
-            masked_bold_residuals = bold_full_2d_data[decoder_2d_data != 0]
-            decoder_2d_data = decoder_2d_data[decoder_2d_data != 0]
-        elif isinstance(self.bold_img, nib.Cifti2Image):
-            # bold_data is [loci, time]
-            masked_bold_residuals = self.bold_residuals[decoder_weights.ravel() != 0, :]
-            decoder_2d_data = decoder_weights[decoder_weights != 0]
-        else:
-            raise ValueError(f"Unsupported image type: {type(self.bold_img)}")
-        if self.args.verbose:
-            print(f"  masked BOLD data are now shaped {masked_bold_residuals.shape} "
-                  f"and have {np.sum(masked_bold_residuals != 0.0):,} values.")
-            print(f"  weights are now shaped {decoder_2d_data.shape} "
-                  f"and have {np.sum(decoder_2d_data != 0.0):,} values.")
-
-        # Add a bias, for the intercept. This is never zero or one in Noam's
-        # decoders, though. :( I am using a 0-intercept, and a brief
-        # investigation looked like putting it AFTER the data fits best.
-        weights = np.append(decoder_2d_data, 0.0)
-        print(f"  mean weight value: {np.mean(weights):.3f} "
-              f"({np.min(weights):.3f} to {np.max(weights):.3f})")
-
-        return masked_bold_residuals, weights, decoder_stem
-
-    def predict_y(self, data, weights):
+    def predict_y(self, data: np.ndarray, weights: np.ndarray):
         """ Use measured BOLD data (cleaned) to predict y """
 
         # Normally, we use a decoder, which is a vector of weights.
@@ -644,24 +569,61 @@ class App:
             words = "extracted", "from decoder volume"
             # Normalize decoder weights before decoding
             if self.args.normalize in ["decoder", "each", ]:
+                w_meta_pre = (
+                    np.mean(weights), np.std(weights), np.sum(weights != 0.0), weights.shape
+                )
+                weights = zscore(weights)
                 weights = (weights - weights.mean()) / weights.std()
+                w_meta_post = (
+                    np.mean(weights), np.std(weights), np.sum(weights != 0.0), weights.shape
+                )
+                if self.args.verbose:
+                    print(f"    - decoder weights before z-scoring: shape {w_meta_pre[3]}; mean {w_meta_pre[0]:.2f} "
+                          f"+- {w_meta_pre[1]:.2f} with {w_meta_pre[2]:,} non-zero weights")
+                    print(f"    - decoder weights before z-scoring: shape {w_meta_post[3]}; mean {w_meta_post[0]:.2f} "
+                          f"+- {w_meta_post[1]:.2f} with {w_meta_post[2]:,} non-zero weights")
 
         if self.args.verbose:
             print(f"  - {words[0]} {len(weights)} weights {words[1]}")
 
         # Normalize BOLD data before decoding
         if self.args.normalize in ["bold", "each", ]:
-            data = data - data.mean(axis=-1, keepdims=True)
-            data = data / data.std(axis=-1, keepdims=True)
+            d_meta_pre = (
+                np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
+            )
+            time_axis = len(data.shape) - 1
+            data = zscore(data, axis=time_axis, ddof=0)
+            data = np.nan_to_num(data, nan=0.0)
+            d_meta_post = (
+                np.mean(data), np.std(data), np.sum(data != 0.0), data.shape
+            )
+            if self.args.verbose:
+                print(f"    - BOLD before z-scoring along time axis {time_axis}: "
+                      f"shape {d_meta_pre[3]}; mean {d_meta_pre[0]:.2f} "
+                      f"+- {d_meta_pre[1]:.2f} with {d_meta_pre[2]:,} non-zero values")
+                print(f"    - BOLD before z-scoring along time axis {time_axis}: "
+                      f"shape {d_meta_post[3]}; mean {d_meta_post[0]:.2f} "
+                      f"+- {d_meta_post[1]:.2f} with {d_meta_post[2]:,} non-zero values")
 
+        # According to Claude, adding an intercept to the data is inappropriate.
+        # It would only make sense if we had access to the original classifier's
+        # fitted intercept, and only if the absolute score mattered.
+        # Since we only care about scores relative to other subjects' scores,
+        # we will leave intercepts out of it.
+        """
         if data.shape[0] == weights.shape[0]:
             # No intercept, use as-is
             x = data
         else:
             # The weights have an intercept, add ones to the data
             x = np.append(data, np.ones((1, data.shape[1])), axis=0)
-        y_hat = np.dot(weights.T, x).T
+        """
+        y_hat = np.dot(weights.T, data).T
 
+        if self.args.verbose:
+            print(f"    - Scores: "
+                  f"shape {y_hat.shape}; mean {np.mean(y_hat):.2f} "
+                  f"+- {np.std(y_hat):.2f} with {np.sum(y_hat != 0.0)} non-zero scores")
         if self.args.normalize == "result":
             y_hat = (y_hat - y_hat.mean()) / y_hat.std()
 
@@ -708,6 +670,12 @@ class App:
         self.bold_data = self.get_data_from_image(self.bold_img)
         # <state:> self.bold_img contains BOLD fMRI image, clipped and smoothed
         # <state:> self.bold_data contains BOLD fMRI data from self.bold_img
+        self.bold_data = self.bold_data.reshape(-1, self.bold_data.shape[-1])
+        bold_data_nonzero_mask = np.sum(self.bold_data != 0.0, axis=1) != 0.0
+        self.bold_data = self.bold_data[bold_data_nonzero_mask, :]
+        # <state:> self.bold_data contains 2D non-zero fMRI data
+        if self.args.verbose:
+            print(f"BOLD data flattened and filtered to {self.bold_data.shape}")
 
         # Remove motion confounds from BOLD, if requested
         if self.args.confounds:
@@ -730,6 +698,7 @@ class App:
                 decoder_file.name.find("_ones"),
                 decoder_file.name.find("_weights")
             )
+            split_idx = len(decoder_file.name) if split_idx == -1 else split_idx
             decoder_name = decoder_file.name[0:split_idx]
             existing_score_files = [
                 sf for sf in list(self.args.output_path.glob("*.tsv"))
@@ -742,17 +711,52 @@ class App:
                 continue
             elif len(existing_score_files) > 0 and not self.args.force:
                 print(f"One score file for {str(decoder_file)} already exists, "
-                      f"but there should be two. Trying again to generate "
-                      f"both scores files for {decoder_file.name}.")
+                      f"but there should be two. Delete the file and try again "
+                      f"to generate both scores files for {decoder_file.name}.")
+                continue
 
-            masked_bold_residuals, weight_data, decoder_name = self.load_and_mask_data(
+            # Load the decoder and resample into BOLD space if necessary
+            decoder_img, decoder_wts, decoder_mask = self.load_decoder(
                 decoder_file, self.args.decoder_mask,
-                save_to=self.args.output_path,
             )
+            """
+            decoder_weights = decoder_weights * one_hot_mask
+            decoder_img = nib.Nifti1Image(decoder_weights, decoder_img.affine)
+            if self.args.verbose:
+                print(f"  the {decoder_weights.shape} decoder was masked down to "
+                      f"{np.sum(decoder_weights.astype('bool')):,} hot voxels.")
+
+            if self.args.save_intermediates:
+                decoder_img.to_filename(self.args.output_path / f"decoder_{decoder_stem}_final{decoder_extension}")
+
+            # masked_bold_residuals, weight_data
+            combined_mask = self.combine_bold_and_decoder_masks(
+                bold_data_nonzero_mask, decoder_mask
+            )
+            """
+            assert(bold_data_nonzero_mask.shape == decoder_mask.shape)
+            combined_mask = bold_data_nonzero_mask & decoder_mask
+            decoder_weights = decoder_wts[combined_mask]
+
+            masked_bold_residuals = self.bold_residuals[combined_mask[bold_data_nonzero_mask], :]
+
+            # According to Claude, adding an intercept to the weights or the data is inappropriate.
+            # It would only make sense if we had access to the original classifier's
+            # fitted intercept, and only if the absolute score mattered.
+            # Since we only care about scores relative to other subjects' scores,
+            # we will leave intercepts out of it.
+            # XX OLD XX: Add a bias, for the intercept. This is never zero or one in Noam's
+            # XX OLD XX: decoders, though. :( I am using a 0-intercept, and a brief
+            # XX OLD XX: investigation looked like putting it AFTER the data fits best.
+            """
+            decoder_weights = np.append(decoder_weights, 1.0)
+            """
+
             if self.args.verbose:
                 print(f"  shape of loaded data    : {self.bold_img.shape}")
                 print(f"  shape of residual data  : {self.bold_residuals.shape}")
-                print(f"  shape of weights        : {weight_data.shape}")
+                print(f"  shape of weights (all)  : {decoder_wts.shape}")
+                print(f"  shape of weights (><0)  : {decoder_weights.shape}")
                 print(f"  shape of final residuals: {masked_bold_residuals.shape}")
 
             if self.args.debug:
@@ -760,10 +764,11 @@ class App:
                 self.write_some_matrices(self.bold_img.get_fdata()[:, :, :, 1])
 
             for label, weights in [
-                ("ones", np.ones((weight_data.shape[0], 1))),
-                ("weights", weight_data),
+                ("ones", np.ones((decoder_weights.shape[0], 1))),
+                ("weights", decoder_weights),
             ]:
-                print(f"  - shape of weights: {weights.shape}")
+                if self.args.verbose:
+                    print(f"  - shape of {label}: {weights.shape}")
                 predicted_y = self.predict_y(masked_bold_residuals, weights)
                 if np.sum(np.isnan(predicted_y)) > 0:
                     print("NaN values in predicted y, no scores!")
