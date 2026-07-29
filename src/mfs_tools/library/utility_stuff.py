@@ -49,7 +49,7 @@ def get_size(obj, seen=None):
         size += sum([get_size(i, seen) for i in obj])
     if hasattr(obj, "__slots__"):
         for attrname in obj.__slots__:
-            if attr:=getattr(obj, attrname, None):
+            if attr:=getattr(obj, attrname, None) is not None:
                 size += get_size(attr, seen)
     return size
 
@@ -114,7 +114,7 @@ def compare_mats(
                     print("| " + a_vals + f" | {mid_str} | " + b_vals + " |")
 
             # Extract just values that differ between matrices and compare them.
-            eq = np.array(a == b, dtype=np.bool)
+            eq = np.array(np.abs(a - b) > tolerance, dtype=np.bool)
             different_a_vals = a[~eq]
             different_b_vals = b[~eq]
 
@@ -124,7 +124,7 @@ def compare_mats(
             })
             diff_vals['delta'] = np.abs(diff_vals[a_name] - diff_vals[b_name])
 
-            if (np.sum(~eq) == 0) or ((len(eq) / np.sum(~eq)) < 10000):
+            if (np.sum(~eq) == 0) or ((len(eq.ravel()) / np.sum(~eq)) < 10000):
                 print(red_on +
                       f"  {np.sum(~eq):,} of {len(eq.ravel()):,} values differ. " +
                       f"The mean difference, where there are differences, "
@@ -132,8 +132,8 @@ def compare_mats(
                       color_off)
             else:
                 print(green_on +
-                      f"  Only 1 in {int(len(eq) / np.sum(~eq))} values differ" +
-                      f" ({np.sum(~eq):,} of {len(eq):,}). " +
+                      f"  Only 1 in {int(len(eq.ravel()) / np.sum(~eq))} values differ" +
+                      f" ({np.sum(~eq):,} of {len(eq.ravel()):,}). " +
                       color_off)
 
             if diff_vals['delta'].max() >= 1.0:
@@ -183,7 +183,10 @@ def correlate_columns(a, b):
     denominator = np.sqrt(np.dot(sum_squares_a, sum_squares_b))
 
     # Covariance over variance is the Pearson correlation
-    return np.divide(numerator, denominator, where=denominator != 0.0)
+    return np.divide(
+        numerator, denominator,
+        out=np.full_like(numerator, np.nan), where=denominator != 0.0
+    )
 
 
 def correlate_bold(
@@ -241,6 +244,7 @@ def correlate_bold(
               f"will yield a {m.shape}-shaped correlation matrix.",
               flush=True)
     # Create indices into strips of the matrix to do strip-wise correlations.
+    # TODO: Handle edge case where strip_size is larger than bold_data.shape[1]
     slice_bounds = list(np.arange(strip_size, bold_data.shape[1], strip_size))
     slice_bounds = [((b - strip_size), b) for b in slice_bounds]
     slice_bounds += [(slice_bounds[-1][1], bold_data.shape[1])]
@@ -360,6 +364,7 @@ def get_tr_len(bold_file, verbose=False):
     """
 
     # The best bet is to get it directly from the Nifti/Cifti2 file.
+    bold_file = pathlib.Path(bold_file)
     tr_len = np.nan
     if (
         isinstance(bold_file, nib.nifti1.Nifti1Image) or

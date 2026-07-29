@@ -102,15 +102,15 @@ class SimilarityScores:
                     self.alt_networks[int(match_alt.group(2))] = dict()
                     for i, val in enumerate(_df[col].values):
                         self.alt_networks[int(match_alt.group(2))][(i, 0)] = val
-                elif match_alt.group(1) == "FC_Similarity":
+                elif match_alt.group(1) == "Alt_FC_Similarity":
                     if not hasattr(self, "alt_func_sims"):
-                        setattr(self, "alt_networks", dict())
+                        setattr(self, "alt_func_sims", dict())
                     self.alt_func_sims[int(match_alt.group(2))] = dict()
                     for i, val in enumerate(_df[col].values):
                         self.alt_func_sims[int(match_alt.group(2))][(i, 0)] = val
-                elif match_alt.group(1) == "Spatial_Score":
+                elif match_alt.group(1) == "Alt_Spatial_Score":
                     if not hasattr(self, "alt_spatial_scores"):
-                        setattr(self, "alt_networks", dict())
+                        setattr(self, "alt_spatial_scores", dict())
                     self.alt_spatial_scores[int(match_alt.group(2))] = dict()
                     for i, val in enumerate(_df[col].values):
                         self.alt_spatial_scores[int(match_alt.group(2))][(i, 0)] = val
@@ -118,9 +118,9 @@ class SimilarityScores:
                 if col == "Community":
                     self.community = _df[col].values
                 elif col == "Network":
-                    self.network = _df[col].values
+                    self.network = {'values': _df[col].values, }  # TODO: replace this with a good dict
                 elif col == "Network_Manual_Decision":
-                    self.network_manual_decision = _df[col].values
+                    self.network_manual_decision = {'values': _df[col].values, }  # TODO: replace this with a good dict
                 elif col == "R":
                     self.r = _df[col].values
                 elif col == "G":
