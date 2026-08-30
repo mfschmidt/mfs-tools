@@ -222,10 +222,15 @@ class App:
         self.args.output_path.mkdir(parents=True, exist_ok=True)
 
         if self.args.confound_strategy not in ['motion_6', 'motion_7', 'motion_25']:
-            print(f"[red]ERROR: --confound-strategy must be one of "
-                  f"'motion_6', 'motion_7', or 'motion_25'. "
-                  f"Got {self.args.confound_strategy}[/red]")
-            we_have_a_fatal_error = True
+            if self.args.confounds is None:
+                print(f"[red]WARNING: No --confounds were selected, so no motion "
+                      f"regression will happen in this decode. That's OK if it "
+                      f"was already done, but probably a bad idea if it wasn't.[/red]")
+            else:
+                print(f"[red]ERROR: --confound-strategy must be one of "
+                      f"'motion_6', 'motion_7', or 'motion_25'. "
+                      f"Got {self.args.confound_strategy}[/red]")
+                we_have_a_fatal_error = True
 
         if we_have_a_fatal_error:
             sys.exit(1)
